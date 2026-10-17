@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Media Grabber</title>
+<link rel="stylesheet" href="static/app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="logo" aria-hidden="true">▶</span>
+    <div><h1>Media Grabber</h1><p class="sub">iPlayer &amp; YouTube → NAS</p></div>
+  </div>
+  <div class="pills" id="pills"></div>
+</header>
+
+<nav class="tabs" role="tablist">
+  <button data-tab="iplayer" class="on">iPlayer</button>
+  <button data-tab="links">Links</button>
+  <button data-tab="queue">Queue <span class="badge" id="qbadge" hidden></span></button>
+  <button data-tab="series">Series</button>
+  <button data-tab="library">Library</button>
+  <button data-tab="storage">Storage</button>
+  <button data-tab="vpn">VPN</button>
+</nav>
+
+<main>
+  <div id="banner" class="banner" hidden></div>
+
+  <!-- iPlayer -->
+  <section id="tab-iplayer" class="tab on">
+    <form id="search-form" class="card row">
+      <input id="q" type="search" placeholder="Search BBC iPlayer — e.g. Bluey, Planet Earth" autocomplete="off" required>
+      <select id="qtype" aria-label="Type"><option value="tv">TV</option><option value="radio">Radio</option><option value="all">Both</option></select>
+      <button class="primary">Search</button>
+    </form>
+    <form id="pid-form" class="card">
+      <label for="pid">Or paste an iPlayer / Sounds link</label>
+      <div class="row">
+        <input id="pid" placeholder="https://www.bbc.co.uk/iplayer/episode/… or programme ID" required>
+        <button class="primary">Download</button>
+      </div>
+      <div class="checks">
+        <label><input type="checkbox" id="pid-series"> Whole series / all episodes</label>
+        <label><input type="checkbox" id="pid-subs"> Subtitles</label>
+      </div>
+    </form>
+    <div id="index-note" class="note"></div>
+    <div id="results" class="results"></div>
+  </section>
+
+  <!-- Links -->
+  <section id="tab-links" class="tab">
+    <form id="link-form" class="card">
+      <label for="url">YouTube or other video link</label>
+      <div class="row">
+        <input id="url" type="url" placeholder="https://www.youtube.com/watch?v=…" required>
+        <button class="primary">Download</button>
+      </div>
+      <div class="checks">
+        <label><input type="checkbox" id="link-audio"> Audio only (MP3)</label>
+        <label><input type="checkbox" id="link-playlist"> Whole playlist</label>
+      </div>
+      <p class="hint">Uses yt-dlp. ITVX, Channel 4, My5 and STV use DRM and can't be downloaded.</p>
+    </form>
+  </section>
+
+  <!-- Queue -->
+  <section id="tab-queue" class="tab">
+    <div class="toolbar"><h2>Downloads</h2><button id="clear-jobs" class="ghost">Clear finished</button></div>
+    <div id="jobs"></div>
+  </section>
+
+  <!-- Series -->
+  <section id="tab-series" class="tab">
+    <form id="pvr-form" class="card">
+      <label for="pvr-q">Record every new episode matching</label>
+      <div class="row">
+        <input id="pvr-q" placeholder="Programme name, e.g. Hey Duggee" required>
+        <select id="pvr-type"><option value="tv">TV</option><option value="radio">Radio</option></select>
+        <button class="primary">Add</button>
+      </div>
+      <div class="checks"><label><input type="checkbox" id="pvr-subs"> Subtitles</label></div>
+      <p class="hint" id="pvr-next"></p>
+    </form>
+    <div class="toolbar"><h2>Series recordings</h2><button id="pvr-run" class="ghost">Check now</button></div>
+    <div id="pvr"></div>
+  </section>
+
+  <!-- Library -->
+  <section id="tab-library" class="tab">
+    <div class="toolbar"><h2>Recently saved</h2><button id="lib-refresh" class="ghost">Refresh</button></div>
+    <div id="library"></div>
+  </section>
+
+  <!-- Storage -->
+  <section id="tab-storage" class="tab">
+    <div class="toolbar"><h2>NAS</h2><button id="nas-check" class="ghost">Run check</button></div>
+    <div id="nas"></div>
+    <div id="hadisk"></div>
+    <div id="versions" class="note"></div>
+  </section>
+
+  <!-- VPN -->
+  <section id="tab-vpn" class="tab">
+    <div class="toolbar"><h2>UK VPN (iPlayer only)</h2><button id="vpn-check" class="ghost">Re-check exit</button></div>
+    <div id="vpn"></div>
+    <form id="vpn-form" class="card">
+      <label for="wg">Paste a WireGuard config (.conf)</label>
+      <textarea id="wg" rows="9" spellcheck="false" placeholder="[Interface]&#10;PrivateKey = …&#10;Address = 10.2.0.2/32&#10;DNS = 10.2.0.1&#10;&#10;[Peer]&#10;PublicKey = …&#10;Endpoint = …:51820"></textarea>
+      <div class="row end">
+        <button type="button" id="vpn-delete" class="danger ghost">Remove</button>
+        <button class="primary">Save &amp; connect</button>
+      </div>
+      <p class="hint">Proton VPN: account.protonvpn.com → Downloads → WireGuard → GNU/Linux, a UK server, NetShield off. The tunnel only carries this add-on's iPlayer traffic; the rest of your network is untouched. The key is stored in the add-on's private data and never shown again.</p>
+    </form>
+  </section>
+</main>
+
+<div id="toast" class="toast" hidden></div>
+<script src="static/app.js"></script>
+</body>
+</html>

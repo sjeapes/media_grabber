@@ -1,0 +1,26 @@
+#!/usr/bin/env python3
+# Test stub mimicking get_iplayer output.
+import sys, time
+a = sys.argv[1:]
+open("/tmp/claude-0/gip_args.log" if False else sys.argv[0] + ".last", "w").write("\n".join(a))
+if "--listformat" in a:
+    fmt = a[a.index("--listformat") + 1]
+    rows = [("m001abcd","Bluey","Series 3: 1. Stickbird","CBeebies","420","2026-10-01T07:00:00Z","https://ichef.bbci.co.uk/x.jpg","tv","The family goes to the beach."),
+            ("m002efgh","Bluey","Series 3: 2. Housework","CBeebies","420","2026-10-02T07:00:00Z","","tv","Bandit | Chilli do chores.")]
+    print("INFO: some banner")
+    for r in rows:
+        line = fmt
+        for k, v in zip(["pid","name","episode","channel","duration","available","thumbnail","type","desc"], r):
+            line = line.replace(f"<{k}>", v)
+        print(line)
+    print("INFO: 2 matching programmes")
+    sys.exit(0)
+if "--refresh" in a:
+    time.sleep(0.2); sys.exit(0)
+if "--pid" in a or "--get" in a:
+    if "FAILME" in " ".join(a):
+        print("ERROR: Failed to record 'x'"); sys.exit(0)
+    for p in (10, 45.5, 99.9):
+        sys.stdout.write(f"\r {p:5.1f}% of ~1.20 GiB @  8.4 Mb/s ETA: 00:0{9-int(p/12)}:00 (hlsvideo/x)"); sys.stdout.flush(); time.sleep(0.15)
+    print("\nINFO: Downloaded: '/nas/iPlayer/Bluey/Bluey - Stickbird m001abcd original.mp4'")
+    sys.exit(0)

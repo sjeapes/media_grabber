@@ -1,0 +1,2 @@
+#!/bin/sh
+echo "wireproxy stub using $2"; exec sleep 3600

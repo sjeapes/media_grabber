@@ -1,0 +1,46 @@
+name: Media Grabber
+version: "0.1.0"
+slug: media_grabber
+description: BBC iPlayer (get_iplayer) and YouTube (yt-dlp) downloader that saves to your NAS, with NAS health and a split-tunnel UK VPN for iPlayer only.
+url: https://github.com/sjeapes/ha-addons/tree/main/media_grabber
+arch:
+  - amd64
+  - aarch64
+startup: application
+boot: auto
+init: false
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:television-play
+panel_title: Media Grabber
+homeassistant_api: true
+map:
+  - media:rw
+  - share:rw
+  - addon_config:rw
+options:
+  nas_path: /media/nas
+  iplayer_folder: iPlayer
+  youtube_folder: YouTube
+  require_network_mount: true
+  low_space_gb: 50
+  tv_quality: fhd,hd,sd
+  youtube_format: "bv*[height<=1080]+ba/b[height<=1080]"
+  max_concurrent_downloads: 1
+  pvr_interval_hours: 4
+  iplayer_requires_uk_vpn: true
+  vpn_for_youtube: false
+  auto_update_tools: true
+schema:
+  nas_path: str
+  iplayer_folder: str
+  youtube_folder: str
+  require_network_mount: bool
+  low_space_gb: int(1,100000)
+  tv_quality: str
+  youtube_format: str
+  max_concurrent_downloads: int(1,4)
+  pvr_interval_hours: int(1,48)
+  iplayer_requires_uk_vpn: bool
+  vpn_for_youtube: bool
+  auto_update_tools: bool

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.1
+
+- Failed downloads are retried automatically (up to 3 attempts, after 1 and
+  5 minutes) — a short VPN or network blip no longer loses an episode.
+- Failures are written to the add-on log with the last lines of output, and
+  published to `sensor.media_grabber_last_download` (`error`, `attempts`,
+  `log_tail`) and `sensor.media_grabber_queue` (`recent`).
+- VPN tunnel errors from wireproxy now appear in the add-on log.
+- The storage watchdog only stops downloads after ~45 s of continuous trouble,
+  not on a single slow check.
+- Fix: a retry that succeeded could be reported as failed because of the
+  previous attempt's error lines.
+
 ## 0.3.0
 
 - New **Space** tab: read-only scan of a storage location showing a folder

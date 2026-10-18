@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import collections
 import json
+import logging
 import queue
 import re
 import subprocess
@@ -19,6 +20,12 @@ GIP_FILE = re.compile(r"INFO: (?:Downloaded|Recorded|File name prefix = )\s*:?\s
 YTDLP_DEST = re.compile(r'\[(?:download|Merger|ExtractAudio)\].*?(?:Destination: |into "|to: )"?(.+?)"?$')
 
 ACTIVE = {"queued", "running"}
+MAX_ATTEMPTS = 3
+RETRY_DELAYS = (60, 300)        # seconds before attempt 2 and attempt 3
+# Failures that won't get better by trying again
+PERMANENT = ("DRM", "nothing to run", "Not in the last scan", "not a valid",
+             "No media streams found", "Enter an iPlayer")
+log = logging.getLogger("mediagrabber.jobs")
 
 
 class Job(dict):
@@ -38,6 +45,7 @@ class JobQueue:
         self.path: Path = cfg.data_dir / "jobs.json"
         self.jobs: dict[str, Job] = collections.OrderedDict()
         self.q: queue.Queue[str] = queue.Queue()
+        self.retry_delays = RETRY_DELAYS
         self.procs: dict[str, subprocess.Popen] = {}
         self.lock = threading.RLock()
         self._dirty = False
@@ -81,7 +89,7 @@ class JobQueue:
     def add(self, kind: str, title: str, spec: dict | None, meta: dict | None = None,
             cmd: list[str] | None = None) -> Job:
         job = Job(id=uuid.uuid4().hex[:10], kind=kind, title=title, spec=spec, cmd=cmd,
-                  meta=meta or {}, target=None, status="queued", progress=0.0, speed=None, eta=None, error=None,
+                  meta=meta or {}, target=None, status="queued", attempt=1, past_errors=[], progress=0.0, speed=None, eta=None, error=None,
                   files=[], log=[], created=time.time(), started=None, finished=None)
         with self.lock:
             self.jobs[job["id"]] = job
@@ -133,6 +141,13 @@ class JobQueue:
             return self.add(j["kind"], j["title"], j.get("spec"), j["meta"],
                             cmd=None if j.get("spec") else j.get("cmd"))
 
+    def recent(self, n: int = 10):
+        with self.lock:
+            done = [j for j in self.jobs.values() if j["status"] not in ACTIVE]
+        return [{"title": j["title"][:120], "status": j["status"], "kind": j["kind"],
+                 "attempts": j.get("attempt", 1), "error": (j.get("error") or "")[:300] or None,
+                 "finished": j.get("finished")} for j in done[-n:][::-1]]
+
     def running_ids(self):
         with self.lock:
             return [k for k, j in self.jobs.items() if j["status"] == "running"]
@@ -159,17 +174,20 @@ class JobQueue:
                 err, cmd = self.prepare(j)
             except Exception as exc:  # noqa: BLE001 - never kill the worker thread
                 err, cmd = f"Could not prepare download: {exc}", None
+            final = False
             with self.lock:
                 if j["status"] != "queued":
-                    continue
-                if not err:
-                    j["cmd"] = cmd
+                    continue  # cancelled while preparing
                 if err:
                     j.update(status="failed", error=err, finished=time.time())
+                    final = not self._maybe_retry(j)
                     self._save()
+                else:
+                    j.update(cmd=cmd, status="running", started=time.time())
+            if err:
+                if final:
                     self.on_finish(j)
-                    continue
-                j.update(status="running", started=time.time())
+                continue
             self._run(j)
 
     def _run(self, j: Job):
@@ -177,9 +195,12 @@ class JobQueue:
             p = subprocess.Popen(j["cmd"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  text=True, bufsize=1, errors="replace")
         except OSError as exc:
-            j.update(status="failed", error=f"Could not start: {exc}", finished=time.time())
-            self._save()
-            self.on_finish(j)
+            with self.lock:
+                j.update(status="failed", error=f"Could not start: {exc}", finished=time.time())
+                final = not self._maybe_retry(j)
+                self._save()
+            if final:
+                self.on_finish(j)
             return
         self.procs[j["id"]] = p
         for raw in p.stdout:
@@ -200,8 +221,29 @@ class JobQueue:
             else:
                 j.update(status="failed", error=j.get("error") or self._guess_error(j, rc))
             j["finished"] = time.time()
+            final = j["status"] != "failed" or not self._maybe_retry(j)
             self._save()
-        self.on_finish(j)
+        if final:
+            self.on_finish(j)
+
+    def _maybe_retry(self, j: Job) -> bool:
+        """Re-queue a failed job after a back-off, up to MAX_ATTEMPTS. Caller holds the lock."""
+        attempt = j.get("attempt", 1)
+        err = j.get("error") or ""
+        if attempt >= MAX_ATTEMPTS or any(p in err for p in PERMANENT):
+            return False
+        delay = self.retry_delays[min(attempt - 1, len(self.retry_delays) - 1)]
+        tail = [l for l in j["log"][-12:] if "%" not in l]
+        log.warning("%s failed (attempt %d of %d): %s — retrying in %ds\n    %s", j["title"], attempt,
+                    MAX_ATTEMPTS, err, delay, "\n    ".join(tail[-8:]) or "(no output)")
+        j.setdefault("past_errors", []).append(err)
+        j.update(status="queued", attempt=attempt + 1, error=None, progress=0.0, speed=None,
+                 eta=None, started=None, finished=None, retry_at=time.time() + delay)
+        j["log"].append(f"--- {err} — retrying in {delay}s (attempt {attempt + 1} of {MAX_ATTEMPTS}) ---")
+        t = threading.Timer(delay, self.q.put, args=(j["id"],))
+        t.daemon = True
+        t.start()
+        return True
 
     def _parse(self, j: Job, line: str):
         m = YTDLP_PROGRESS.match(line)
@@ -232,15 +274,24 @@ class JobQueue:
         self._dirty = True
 
     @staticmethod
-    def _looks_failed(j: Job) -> bool:
+    def _this_attempt(j: Job) -> list[str]:
+        """Log lines from the current attempt only (retries add a '--- ' marker line)."""
+        lines = j["log"]
+        for i in range(len(lines) - 1, -1, -1):
+            if lines[i].startswith("--- "):
+                return lines[i + 1:]
+        return lines
+
+    @classmethod
+    def _looks_failed(cls, j: Job) -> bool:
         # get_iplayer exits 0 even when nothing could be fetched
-        tail = " ".join(j["log"][-20:])
+        tail = " ".join(cls._this_attempt(j)[-20:])
         return j["kind"] == "iplayer" and ("ERROR: Failed to record" in tail or
                                            "No media streams found" in tail)
 
-    @staticmethod
-    def _guess_error(j: Job, rc: int) -> str:
-        tail = j["log"][-20:]
+    @classmethod
+    def _guess_error(cls, j: Job, rc: int) -> str:
+        tail = cls._this_attempt(j)[-20:]
         joined = " ".join(tail)
         if "geoblock" in joined.lower() or "outside the uk" in joined.lower() or "403" in joined:
             return "Blocked by BBC — check the UK VPN (the server may be on a VPN blocklist)"

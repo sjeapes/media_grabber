@@ -152,13 +152,14 @@ async function loadJobs() {
   $("#jobs").innerHTML = jobs.map((j) => {
     const info = j.status === "running"
       ? [j.progress ? j.progress.toFixed(1) + "%" : "starting", j.speed, j.eta && "ETA " + j.eta].filter(Boolean).join(" · ")
-      : j.status === "queued" ? "waiting" : `${j.status === "done" ? "finished" : j.status} ${ago(j.finished)}`;
+      : j.status === "queued" ? (j.retry_at && j.retry_at > Date.now() / 1000 ? `retrying ${inFuture(j.retry_at)}` : "waiting") : `${j.status === "done" ? "finished" : j.status} ${ago(j.finished)}`;
     const kind = j.kind === "iplayer" ? "iPlayer" : "Link";
     return `<div class="job">
       <div class="head"><div class="title">${esc(j.title)}</div><span class="st ${j.status}">${j.status}</span></div>
-      <div class="info">${kind} · ${esc(info)}${j.files.length ? " · " + esc(j.files[j.files.length - 1].split("/").pop()) : ""}</div>
+      <div class="info">${kind} · ${esc(info)}${j.attempt > 1 ? ` · attempt ${j.attempt} of 3` : ""}${j.files.length ? " · " + esc(j.files[j.files.length - 1].split("/").pop()) : ""}</div>
       ${j.status === "running" ? `<div class="bar"><i style="width:${Math.max(2, j.progress || 0)}%"></i></div>` : ""}
       ${j.error ? `<div class="err">${esc(j.error)}</div>` : ""}
+      ${j.status !== "failed" && j.past_errors && j.past_errors.length ? `<div class="info">Earlier attempt: ${esc(j.past_errors[j.past_errors.length - 1])}</div>` : ""}
       <div class="row end">
         ${["queued", "running"].includes(j.status) ? `<button class="ghost danger" data-cancel="${j.id}">Cancel</button>` : ""}
         ${["failed", "cancelled"].includes(j.status) ? `<button class="ghost" data-retry="${j.id}">Retry</button>` : ""}

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import collections
 import json
+import logging
 import os
 import subprocess
 import threading
@@ -16,6 +17,7 @@ import time
 import urllib.request
 
 INTERFACE_KEYS = {"privatekey", "address", "dns", "mtu"}
+log = logging.getLogger("mediagrabber.vpn")
 PEER_KEYS = {"publickey", "presharedkey", "endpoint", "allowedips", "persistentkeepalive"}
 
 
@@ -148,6 +150,9 @@ class Vpn:
             line = line.strip()
             if line and "PrivateKey" not in line:
                 self.log.append(line[-300:])
+                low = line.lower()
+                if any(w in low for w in ("error", "fail", "timeout", "timed out", "unreachable")):
+                    log.warning("wireproxy: %s", line[-300:])
 
     def stop_proc(self):
         with self._lock:

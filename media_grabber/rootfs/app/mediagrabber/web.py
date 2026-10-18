@@ -105,6 +105,7 @@ class Services:
 
     def storage_watch_loop(self):
         """Stop running downloads if their storage disappears or HA's disk gets too full."""
+        bad_checks = 0
         while True:
             time.sleep(15)
             running = self.jobs.running_ids()
@@ -112,6 +113,12 @@ class Services:
                 continue
             st = self.storage.status(probe=False)
             if st["healthy"]:
+                bad_checks = 0
+                continue
+            bad_checks += 1
+            if bad_checks < 3:   # ~45 s of continuous trouble before stopping anything
+                log.info("Storage check failed (%d/3), not stopping downloads yet: %s",
+                         bad_checks, "; ".join(st["problems"]))
                 continue
             still_mounted = {c["path"] for c in self.storage.candidates()}
             reason = "Stopped: " + "; ".join(st["problems"])
@@ -125,6 +132,12 @@ class Services:
 
     def on_finish(self, job):
         self.last_finished = job
+        if job["status"] == "failed":
+            tail = [l for l in job["log"][-15:] if "%" not in l][-10:]
+            log.warning("FAILED %s after %d attempt(s): %s\n    %s", job["title"],
+                        job.get("attempt", 1), job.get("error"), "\n    ".join(tail) or "(no output)")
+        elif job["status"] == "done":
+            log.info("Done: %s → %s", job["title"], ", ".join(job.get("files", [])[-1:]) or "?")
         self.ha.event("media_grabber_finished", {
             "title": job["title"], "status": job["status"], "kind": job["kind"],
             "error": job.get("error"), "files": job.get("files", [])})
@@ -133,7 +146,7 @@ class Services:
     def publish(self):
         try:
             self.ha.publish(self.storage.status(), self.vpn.status(), self.jobs.counts(),
-                            self.last_finished)
+                            self.last_finished, self.jobs.recent())
             self.ha.publish_usage(self.usage.summary())
         except Exception:  # noqa: BLE001
             log.exception("publish failed")

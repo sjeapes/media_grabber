@@ -18,7 +18,14 @@ if "--listformat" in a:
 if "--refresh" in a:
     time.sleep(0.2); sys.exit(0)
 if "--pid" in a or "--get" in a:
-    if "FAILME" in " ".join(a):
+    joined = " ".join(a)
+    if "FLAKY" in joined:  # fail the first time only
+        import os
+        flag = joined.split("FLAKY", 1)[1].split()[0]
+        if not os.path.exists(flag):
+            open(flag, "w").close()
+            print("ERROR: Failed to record 'flaky'"); sys.exit(0)
+    if "FAILME" in joined:
         print("ERROR: Failed to record 'x'"); sys.exit(0)
     for p in (10, 45.5, 99.9):
         sys.stdout.write(f"\r {p:5.1f}% of ~1.20 GiB @  8.4 Mb/s ETA: 00:0{9-int(p/12)}:00 (hlsvideo/x)"); sys.stdout.flush(); time.sleep(0.15)

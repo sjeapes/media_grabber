@@ -51,6 +51,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
     cfg = config.load()
     svc = Services(cfg, mounts_file=str(mounts))
+    svc.jobs.retry_delays = (0, 0)
     svc.jobs.start_workers(1)
     app = create_app(svc)
     app.testing = True
@@ -239,6 +240,21 @@ def test_iplayer_failed_record_is_failure(env, monkeypatch):
     r = c.post("/api/iplayer/download", json={"target": "https://www.bbc.co.uk/iplayer/episode/FAILME"})
     j = wait_job(c, r.json["id"])
     assert j["status"] == "failed" and "Failed to record" in j["error"]
+    assert j["attempt"] == 3 and len(j["past_errors"]) == 2
+    recent = svc.jobs.recent()
+    assert recent[0]["status"] == "failed" and recent[0]["attempts"] == 3
+
+
+def test_transient_failure_retries_then_succeeds(env, tmp_path):
+    svc, c = env["svc"], env["c"]
+    svc.cfg.options["iplayer_requires_uk_vpn"] = False
+    flag = tmp_path / "flaky"
+    r = c.post("/api/iplayer/download",
+               json={"target": f"https://www.bbc.co.uk/iplayer/episode/FLAKY{flag}"})
+    j = wait_job(c, r.json["id"])
+    assert j["status"] == "done" and j["attempt"] == 2
+    assert "Failed to record" in j["past_errors"][0]
+    assert any("retrying" in l for l in svc.jobs.jobs[j["id"]]["log"])
 
 
 def test_bad_iplayer_target(env):

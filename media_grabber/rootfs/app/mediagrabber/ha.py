@@ -35,7 +35,7 @@ class HAClient:
     def event(self, event_type: str, data: dict):
         self._post(f"/events/{event_type}", data)
 
-    def publish(self, nas: dict, vpn: dict, counts: dict, last: dict | None):
+    def publish(self, nas: dict, vpn: dict, counts: dict, last: dict | None, recent=None):
         disk = nas.get("disk") or {}
         self.state("binary_sensor.media_grabber_nas_problem", "off" if nas["healthy"] else "on",
                    friendly_name=f"{DEVICE} storage problem", device_class="problem",
@@ -60,11 +60,15 @@ class HAClient:
         self.state("sensor.media_grabber_queue", active, friendly_name=f"{DEVICE} queue",
                    unit_of_measurement="jobs", running=counts.get("running", 0),
                    queued=counts.get("queued", 0), failed=counts.get("failed", 0),
-                   icon="mdi:download")
+                   recent=recent or [], icon="mdi:download")
         if last:
             self.state("sensor.media_grabber_last_download", last["title"][:250],
                        friendly_name=f"{DEVICE} last download", status=last["status"],
-                       kind=last["kind"], finished=last.get("finished"), icon="mdi:television-play")
+                       kind=last["kind"], finished=last.get("finished"),
+                       attempts=last.get("attempt", 1), error=last.get("error"),
+                       past_errors=last.get("past_errors", []),
+                       log_tail=[l for l in last.get("log", []) if "%" not in l][-8:],
+                       icon="mdi:television-play")
 
     def publish_usage(self, summary: dict):
         st = summary["state"]

@@ -49,7 +49,8 @@ async function loadStatus() {
   try { STATUS = await api("status"); } catch (e) { return; }
   const { nas, vpn, counts } = STATUS;
   const nasCls = !nas.healthy ? "bad" : nas.low_space ? "warn" : "ok";
-  const nasTxt = nas.disk ? `NAS ${nas.disk.free_gb} GB free` : "NAS";
+  const nasTxt = nas.disk ? `${nas.mode === "local" ? "HA disk" : nas.name || "NAS"} · ${nas.disk.free_gb} GB free`
+    : nas.needs_choice ? "Choose storage" : "Storage";
   const vpnCls = !vpn.configured ? "" : vpn.uk ? "ok" : "bad";
   const vpnTxt = !vpn.configured ? "VPN not set" : vpn.uk ? `UK VPN · ${vpn.exit.city || "GB"}` : `VPN ${vpn.exit.country || "down"}`;
   $("#pills").innerHTML =
@@ -61,9 +62,15 @@ async function loadStatus() {
   $("#qbadge").hidden = !active; $("#qbadge").textContent = active;
 
   const banner = $("#banner");
-  if (!nas.healthy) { banner.className = "banner"; banner.textContent = "Downloads paused — " + nas.problems.join(" · "); banner.hidden = false; }
-  else if (nas.low_space) { banner.className = "banner warn"; banner.textContent = nas.problems.join(" · "); banner.hidden = false; }
-  else banner.hidden = true;
+  if (!nas.healthy) {
+    banner.className = "banner";
+    banner.innerHTML = "Downloads paused — " + esc(nas.problems.join(" · ")) +
+      (!$("#tab-storage").classList.contains("on") ? ` <a href="#" id="banner-go">Open Storage</a>` : "");
+    banner.hidden = false;
+    const g = $("#banner-go"); g && g.addEventListener("click", (e) => { e.preventDefault(); showTab("storage"); });
+  } else if (nas.low_space || nas.mode === "local") {
+    banner.className = "banner warn"; banner.textContent = nas.warnings.join(" · "); banner.hidden = !nas.warnings.length;
+  } else banner.hidden = true;
 
   const idx = STATUS.index;
   $("#index-note").innerHTML = STATUS.iplayer_block ? esc(STATUS.iplayer_block)
@@ -203,37 +210,82 @@ function meter(pct) {
 }
 function renderStorage(nas) {
   const d = nas.disk;
-  const cls = !nas.healthy ? "bad" : nas.low_space ? "warn" : "ok";
-  const head = !nas.healthy ? "Not ready — downloads are paused" : nas.low_space ? "Working, but space is low" : "Healthy";
+  const cls = !nas.healthy ? "bad" : (nas.low_space || nas.mode === "local") ? "warn" : "ok";
+  const head = !nas.healthy ? "Not ready — downloads are paused"
+    : nas.low_space ? "Working, but space is low"
+    : nas.mode === "local" ? "Saving to Home Assistant's disk" : "Healthy";
+  const where = nas.mode === "local" ? "Home Assistant disk" : nas.source ? `${nas.fstype} from ${nas.source}` : "—";
   $("#nas").innerHTML = `<div class="card">
     <div class="headline"><span class="dot ${cls}"></span>${head}</div>
     ${nas.problems.length ? `<ul class="problems">${nas.problems.map((p) => `<li>${esc(p)}</li>`).join("")}</ul>` : ""}
+    ${nas.warnings.length && nas.healthy ? `<p class="hint">${esc(nas.warnings.join(" · "))}</p>` : ""}
     ${d ? `${meter(d.used_pct)}<div class="stat-grid">
       <div class="stat"><div class="k">Free</div><div class="v">${d.free_gb} GB</div></div>
       <div class="stat"><div class="k">Used</div><div class="v">${d.used_pct}%</div></div>
       <div class="stat"><div class="k">Total</div><div class="v">${d.total_gb} GB</div></div>
       <div class="stat"><div class="k">Write test</div><div class="v">${nas.probe && nas.probe.ok ? nas.probe.ms + " ms" : nas.probe && nas.probe.ok === false ? "failed" : "—"}</div></div>
     </div>` : ""}
-    <dl class="kv">
+    ${nas.path ? `<dl class="kv">
+      <dt>Location</dt><dd>${esc(nas.name || "—")}</dd>
       <dt>Path</dt><dd>${esc(nas.path)}</dd>
-      <dt>Mount</dt><dd>${nas.mounted ? esc(`${nas.fstype} from ${nas.source}`) : "not mounted"}</dd>
-      <dt>iPlayer folder</dt><dd>${esc(nas.folders.iplayer)}</dd>
-      <dt>YouTube folder</dt><dd>${esc(nas.folders.youtube)}</dd>
+      <dt>Mount</dt><dd>${esc(where)}</dd>
+      ${nas.folders ? `<dt>iPlayer folder</dt><dd>${esc(nas.folders.iplayer)}</dd>
+      <dt>YouTube folder</dt><dd>${esc(nas.folders.youtube)}</dd>` : ""}
       <dt>Last write test</dt><dd>${nas.probe && nas.probe.at ? ago(nas.probe.at) : "—"}</dd>
-      <dt>Low-space warning</dt><dd>below ${nas.low_space_gb} GB</dd>
-    </dl></div>`;
+      <dt>Low-space warning</dt><dd>below ${nas.low_space_gb} GB${nas.mode === "local" ? ` · stops below ${nas.local_min_free_gb} GB` : ""}</dd>
+    </dl>` : ""}</div>`;
   const h = nas.ha_disk;
-  $("#hadisk").innerHTML = h ? `<div class="card"><div class="headline">Home Assistant disk</div>
-    ${meter(h.used_pct)}<p class="hint">${h.free_gb} GB free of ${h.total_gb} GB. Downloads never go here — only to the NAS.</p></div>` : "";
+  $("#hadisk").innerHTML = h && nas.mode !== "local" ? `<div class="card"><div class="headline">Home Assistant disk</div>
+    ${meter(h.used_pct)}<p class="hint">${h.free_gb} GB free of ${h.total_gb} GB. Downloads aren't going here.</p></div>` : "";
   const v = STATUS && STATUS.versions;
   $("#versions").textContent = v ? `get_iplayer ${v.get_iplayer || "?"} · yt-dlp ${v["yt-dlp"] || "?"}${STATUS.ha_connected ? " · publishing sensors to Home Assistant" : ""}` : "";
 }
+
+async function loadLocation() {
+  let o;
+  try { o = await api("storage/options"); } catch (e) { $("#location").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  const n = o.candidates.length;
+  const ha = o.local.ha_disk;
+  const opt = (value, title, sub, extra = "") => `
+    <label class="opt ${o.choice === value ? "sel" : ""}">
+      <input type="radio" name="loc" value="${esc(value)}" ${o.choice === value ? "checked" : ""}>
+      <span><b>${title}</b><span class="sm">${sub}</span>${extra}</span>
+    </label>`;
+  const autoSub = n === 0 ? "No network storage found yet"
+    : n === 1 ? `Uses your network storage “${esc(o.candidates[0].name)}”`
+    : `${n} found — pick one below`;
+  const html = [
+    opt("auto", "Automatic", autoSub + " · follows Settings → System → Storage"),
+    ...o.candidates.map((c) => opt(c.id, esc(c.name),
+      `${esc(c.usage)} storage · ${esc(c.fstype)} from ${esc(c.source)}${c.free_gb != null ? ` · ${c.free_gb} GB free` : " · not responding"}`)),
+    opt("local", "Home Assistant storage",
+      `${esc(o.local.path)}${ha ? ` · ${ha.free_gb} GB free of ${ha.total_gb} GB` : ""}`,
+      `<span class="sm warn-t">Shares the disk Home Assistant runs on. Downloads stop if free space drops below ${esc(o.local.min_free_gb)} GB.</span>`),
+  ].join("");
+  $("#location").innerHTML = `<form class="card" id="loc-form">${html}
+    ${n === 0 ? `<p class="hint">Add your NAS in Home Assistant under Settings → System → Storage → Add network storage (usage: Media), then press Re-scan.</p>` : ""}
+    <div class="row end"><button class="primary">Use this location</button></div></form>`;
+  $("#loc-form").querySelectorAll("input[name=loc]").forEach((r) => r.addEventListener("change", () =>
+    $("#loc-form").querySelectorAll(".opt").forEach((l) => l.classList.toggle("sel", l.querySelector("input").checked))));
+  $("#loc-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const choice = new FormData(e.target).get("loc");
+    if (choice === "local" && !confirm("Save downloads to Home Assistant's own disk? It has limited space.")) return;
+    try {
+      const st = await api("storage/select", { method: "POST", body: { choice } });
+      toast(st.healthy ? `Downloads will go to ${st.name}` : st.problems.join(" · "), 5000);
+      await loadStatus(); loadLocation();
+    } catch (err) { toast(err.message); }
+  });
+}
+$("#loc-rescan").addEventListener("click", () => { loadLocation(); loadStatus(); });
+
 $("#nas-check").addEventListener("click", async (e) => {
   e.target.disabled = true;
   try { renderStorage(await api("nas/check", { method: "POST" })); } catch (err) { toast(err.message); }
   e.target.disabled = false;
 });
-loaders.storage = () => STATUS && renderStorage(STATUS.nas);
+loaders.storage = () => { loadLocation(); STATUS && renderStorage(STATUS.nas); };
 
 // ---- VPN ------------------------------------------------------------
 function renderVpn(v) {

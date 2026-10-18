@@ -38,13 +38,17 @@ class HAClient:
     def publish(self, nas: dict, vpn: dict, counts: dict, last: dict | None):
         disk = nas.get("disk") or {}
         self.state("binary_sensor.media_grabber_nas_problem", "off" if nas["healthy"] else "on",
-                   friendly_name=f"{DEVICE} NAS problem", device_class="problem",
-                   problems=nas["problems"], path=nas["path"], fstype=nas.get("fstype"),
-                   source=nas.get("source"), write_ms=(nas.get("probe") or {}).get("ms"),
-                   icon="mdi:nas")
+                   friendly_name=f"{DEVICE} storage problem", device_class="problem",
+                   problems=nas["problems"], warnings=nas.get("warnings", []),
+                   location=nas.get("name"), mode=nas.get("mode"), path=nas.get("path"),
+                   choice=nas.get("choice"), needs_choice=nas.get("needs_choice"),
+                   network_storage_found=nas.get("candidate_count"),
+                   fstype=nas.get("fstype"), source=nas.get("source"),
+                   write_ms=(nas.get("probe") or {}).get("ms"), icon="mdi:nas")
         self.state("sensor.media_grabber_nas_free", disk.get("free_gb", "unavailable"),
-                   friendly_name=f"{DEVICE} NAS free", unit_of_measurement="GB",
+                   friendly_name=f"{DEVICE} storage free", unit_of_measurement="GB",
                    device_class="data_size", state_class="measurement",
+                   location=nas.get("name"), mode=nas.get("mode"),
                    total_gb=disk.get("total_gb"), used_pct=disk.get("used_pct"),
                    low_space=nas.get("low_space"), icon="mdi:harddisk")
         exit_ = vpn.get("exit") or {}

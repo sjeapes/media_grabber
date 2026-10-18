@@ -20,8 +20,10 @@ def main():
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, stop)
-    logging.getLogger("mediagrabber").info("Media Grabber listening on :%d (NAS %s)",
-                                           cfg.listen_port, cfg.nas_path)
+    loc = svc.storage.resolve()
+    logging.getLogger("mediagrabber").info(
+        "Media Grabber listening on :%d — storage: %s", cfg.listen_port,
+        loc["path"] if not loc["error"] else loc["error"])
     serve(create_app(svc), host="0.0.0.0", port=cfg.listen_port, threads=8, ident=None)
 
 

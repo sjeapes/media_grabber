@@ -7,11 +7,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 DEFAULTS = {
-    "nas_path": "/media/nas",
     "iplayer_folder": "iPlayer",
     "youtube_folder": "YouTube",
-    "require_network_mount": True,
     "low_space_gb": 50,
+    "local_min_free_gb": 8,
     "tv_quality": "fhd,hd,sd",
     "youtube_format": "bv*[height<=1080]+ba/b[height<=1080]",
     "max_concurrent_downloads": 1,
@@ -35,19 +34,29 @@ class Config:
     allowed_clients: set = field(default_factory=lambda: {"172.30.32.2", "127.0.0.1", "::1"})
     supervisor_token: str | None = None
     ha_api: str = "http://supervisor/core/api"
+    media_root: Path = Path("/media")
+    share_root: Path = Path("/share")
+    # Set by Storage.resolve(): the folder downloads currently go to (None = nowhere usable)
+    base_path: Path | None = None
 
     # --- derived -------------------------------------------------------
     @property
-    def nas_path(self) -> Path:
-        return Path(self.options["nas_path"])
+    def local_path(self) -> Path:
+        """'Home Assistant storage' option: a folder on HA's own disk, visible to Plex/Media."""
+        return self.media_root / "MediaGrabber"
+
+    def _base(self) -> Path:
+        if self.base_path is None:
+            raise RuntimeError("No download location is available")
+        return self.base_path
 
     @property
     def iplayer_dir(self) -> Path:
-        return self.nas_path / self.options["iplayer_folder"]
+        return self._base() / self.opt("iplayer_folder")
 
     @property
     def youtube_dir(self) -> Path:
-        return self.nas_path / self.options["youtube_folder"]
+        return self._base() / self.opt("youtube_folder")
 
     @property
     def gip_profile(self) -> Path:
@@ -80,6 +89,8 @@ def load() -> Config:
         wireproxy=os.environ.get("MG_WIREPROXY", "wireproxy"),
         listen_port=int(os.environ.get("MG_PORT", "8099")),
         supervisor_token=os.environ.get("SUPERVISOR_TOKEN"),
+        media_root=Path(os.environ.get("MG_MEDIA_ROOT", "/media")),
+        share_root=Path(os.environ.get("MG_SHARE_ROOT", "/share")),
     )
     extra = os.environ.get("MG_ALLOWED_CLIENTS")
     if extra:

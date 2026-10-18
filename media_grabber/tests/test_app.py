@@ -30,14 +30,20 @@ Endpoint = 185.1.2.3:51820
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
-    nas = tmp_path / "nas"
-    nas.mkdir()
+    media = tmp_path / "media"
+    nas = media / "Synology"
+    nas.mkdir(parents=True)
+    (tmp_path / "share").mkdir()
     data = tmp_path / "data"
     mounts = tmp_path / "mounts"
-    mounts.write_text(f"overlay / overlay rw 0 0\n//192.168.1.50/media {nas} cifs rw 0 0\n")
+    mounts.write_text(f"overlay / overlay rw 0 0\n/dev/sda8 {media} ext4 rw 0 0\n"
+                      f"//192.168.1.50/media {nas} cifs rw 0 0\n")
     data.mkdir()
-    (data / "options.json").write_text(json.dumps({"nas_path": str(nas), "low_space_gb": 1}))
+    (data / "options.json").write_text(json.dumps({"low_space_gb": 1, "local_min_free_gb": 1,
+                                                   "nas_path": "/media/nas"}))
     monkeypatch.setenv("MG_DATA_DIR", str(data))
+    monkeypatch.setenv("MG_MEDIA_ROOT", str(media))
+    monkeypatch.setenv("MG_SHARE_ROOT", str(tmp_path / "share"))
     monkeypatch.setenv("MG_ADDON_CONFIG", str(tmp_path / "addon_config"))
     monkeypatch.setenv("MG_GET_IPLAYER", str(STUBS / "get_iplayer"))
     monkeypatch.setenv("MG_YT_DLP", str(STUBS / "yt-dlp"))
@@ -50,7 +56,8 @@ def env(tmp_path, monkeypatch):
     app.testing = True
     client = app.test_client()
     client.environ_base["REMOTE_ADDR"] = "172.30.32.2"
-    yield {"svc": svc, "c": client, "nas": nas, "mounts": mounts, "cfg": cfg}
+    yield {"svc": svc, "c": client, "nas": nas, "mounts": mounts, "cfg": cfg, "tmp": tmp_path,
+           "media": media}
     svc.vpn.shutdown()
 
 
@@ -91,9 +98,11 @@ def test_only_ingress_clients(env):
 
 
 # --- NAS ------------------------------------------------------------------
-def test_nas_healthy_when_network_mounted(env):
+def test_single_nas_is_detected_automatically(env):
     s = env["c"].get("/api/status").json["nas"]
     assert s["healthy"] and s["network_mount"] and s["fstype"] == "cifs"
+    assert s["choice"] == "auto" and s["name"] == "Synology" and s["path"] == str(env["nas"])
+    assert s["folders"]["iplayer"] == str(env["nas"] / "iPlayer")
     assert s["probe"]["ok"] and s["disk"]["total_gb"] > 0
     assert not list(env["nas"].iterdir()), "probe file must be cleaned up"
 
@@ -101,17 +110,79 @@ def test_nas_healthy_when_network_mounted(env):
 def test_nas_unmounted_blocks_downloads(env, monkeypatch):
     env["mounts"].write_text("overlay / overlay rw 0 0\n")
     s = env["c"].post("/api/nas/check").json
-    assert not s["healthy"]
-    assert any("not mounted" in p for p in s["problems"])
+    assert not s["healthy"] and s["mode"] is None
+    assert "No network storage found" in s["problems"][0] and "Home Assistant storage" in s["problems"][0]
     r = env["c"].post("/api/link/download", json={"url": "https://www.youtube.com/watch?v=abc"})
     j = wait_job(env["c"], r.json["id"])
-    assert j["status"] == "failed" and "NAS not ready" in j["error"]
+    assert j["status"] == "failed" and "Storage not ready" in j["error"]
+    assert not (env["media"] / "MediaGrabber").exists(), "must never fall back to local disk"
 
 
-def test_nas_missing(env):
-    env["svc"].cfg.options["nas_path"] = "/does/not/exist"
-    s = env["c"].get("/api/status").json["nas"]
-    assert not s["healthy"] and "Settings" in s["problems"][0]
+def test_selected_nas_unmounted_does_not_fall_back(env):
+    c = env["c"]
+    assert c.post("/api/storage/select", json={"choice": str(env["nas"])}).json["healthy"]
+    env["mounts"].write_text("overlay / overlay rw 0 0\n")
+    s = c.get("/api/status").json["nas"]
+    assert not s["healthy"] and "“Synology” isn't mounted" in s["problems"][0]
+
+
+def test_multiple_nas_requires_choice_then_uses_it(env):
+    c, media = env["c"], env["media"]
+    (media / "QNAP").mkdir()
+    (env["tmp"] / "share" / "backups").mkdir()
+    env["mounts"].write_text(env["mounts"].read_text() +
+                             f"10.0.0.9:/vol/tv {media / 'QNAP'} nfs4 rw 0 0\n"
+                             f"//10.0.0.9/b {env['tmp'] / 'share' / 'backups'} cifs rw 0 0\n")
+    env["svc"].cfg.options.pop("nas_path")
+    s = c.get("/api/status").json["nas"]
+    assert not s["healthy"] and s["needs_choice"] and s["candidate_count"] == 3
+    opts = c.get("/api/storage/options").json
+    assert [x["name"] for x in opts["candidates"]] == ["QNAP", "Synology", "backups"]
+    assert opts["candidates"][2]["usage"] == "Share" and opts["candidates"][0]["free_gb"] is not None
+    assert c.post("/api/storage/select", json={"choice": "/etc"}).status_code == 400
+    s = c.post("/api/storage/select", json={"choice": str(media / "QNAP")}).json
+    assert s["healthy"] and s["name"] == "QNAP" and s["fstype"] == "nfs4"
+    r = c.post("/api/link/download", json={"url": "https://www.youtube.com/watch?v=abc"})
+    j = wait_job(c, r.json["id"])
+    assert j["status"] == "done" and j["target"] == str(media / "QNAP")
+    assert f"home:{media / 'QNAP' / 'YouTube'}" in (STUBS / "yt-dlp.last").read_text().split("\n")
+    # choice survives a restart
+    assert Services(env["cfg"], mounts_file=str(env["mounts"])).storage.status()["name"] == "QNAP"
+
+
+def test_legacy_nas_path_is_preferred_when_present(env):
+    media = env["media"]
+    (media / "nas").mkdir()
+    env["mounts"].write_text(env["mounts"].read_text() + f"//x/y {media / 'nas'} cifs rw 0 0\n")
+    env["svc"].cfg.options["nas_path"] = str(media / "nas")
+    assert env["c"].get("/api/status").json["nas"]["name"] == "nas"
+
+
+def test_local_storage_option(env):
+    c, media = env["c"], env["media"]
+    s = c.post("/api/storage/select", json={"choice": "local"}).json
+    assert s["healthy"] and s["mode"] == "local" and s["path"] == str(media / "MediaGrabber")
+    assert s["warnings"] and (media / "MediaGrabber").is_dir()
+    r = c.post("/api/link/download", json={"url": "https://www.youtube.com/watch?v=abc"})
+    assert wait_job(c, r.json["id"])["status"] == "done"
+    env["svc"].cfg.options["local_min_free_gb"] = 10 ** 6
+    s = c.get("/api/status").json["nas"]
+    assert not s["healthy"] and "keeps working" in s["problems"][0]
+
+
+def test_running_job_stopped_when_storage_goes(env):
+    svc, c = env["svc"], env["c"]
+    r = c.post("/api/link/download", json={"url": "https://www.youtube.com/watch?v=abc"})
+    wait_job(c, r.json["id"])
+    job = svc.jobs.add("link", "long", {"type": "link", "url": "https://x.test/v"})
+    with svc.jobs.lock:
+        job["status"], job["target"] = "running", str(env["nas"])
+    env["mounts"].write_text("overlay / overlay rw 0 0\n")
+    st = svc.storage.status(probe=False)
+    still = {x["path"] for x in svc.storage.candidates()}
+    assert not st["healthy"] and str(env["nas"]) not in still
+    svc.jobs.cancel(job["id"], error="Stopped: " + st["problems"][0])
+    assert job["status"] == "failed" and job["error"].startswith("Stopped: No network storage")
 
 
 # --- iPlayer ----------------------------------------------------------
@@ -209,8 +280,9 @@ def test_pvr_add_list_delete_run(env, monkeypatch):
     assert [i["id"] for i in c.get("/api/pvr").json] == [item["id"]]
     svc.cfg.options["iplayer_requires_uk_vpn"] = False
     assert c.post("/api/pvr/run").json["queued"] == 1
-    cmd = next(j for j in svc.jobs.jobs.values() if j["meta"].get("pvr") == item["id"])["cmd"]
-    assert cmd[-2:] == ["--get", "Hey Duggee"]
+    job = next(j for j in svc.jobs.jobs.values() if j["meta"].get("pvr") == item["id"])
+    svc.storage.resolve()
+    assert svc.build_cmd(job["spec"])[-2:] == ["--get", "Hey Duggee"]
     assert c.delete(f"/api/pvr/{item['id']}").json["ok"]
 
 

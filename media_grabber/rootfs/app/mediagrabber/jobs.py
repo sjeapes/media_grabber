@@ -26,10 +26,14 @@ class Job(dict):
 
 
 class JobQueue:
-    def __init__(self, cfg, preflight, on_finish=None):
-        """preflight(job) -> error string or None; checked again right before running."""
+    def __init__(self, cfg, prepare, on_finish=None):
+        """prepare(job) -> (error or None, cmd or None), called right before a job runs.
+
+        Jobs store a *spec*, not a command, so the download location is decided when the
+        job starts (the user may change it while jobs are queued).
+        """
         self.cfg = cfg
-        self.preflight = preflight
+        self.prepare = prepare
         self.on_finish = on_finish or (lambda job: None)
         self.path: Path = cfg.data_dir / "jobs.json"
         self.jobs: dict[str, Job] = collections.OrderedDict()
@@ -74,9 +78,10 @@ class JobQueue:
                 self._save()
 
     # --- api --------------------------------------------------------------
-    def add(self, kind: str, title: str, cmd: list[str], meta: dict | None = None) -> Job:
-        job = Job(id=uuid.uuid4().hex[:10], kind=kind, title=title, cmd=cmd, meta=meta or {},
-                  status="queued", progress=0.0, speed=None, eta=None, error=None,
+    def add(self, kind: str, title: str, spec: dict | None, meta: dict | None = None,
+            cmd: list[str] | None = None) -> Job:
+        job = Job(id=uuid.uuid4().hex[:10], kind=kind, title=title, spec=spec, cmd=cmd,
+                  meta=meta or {}, target=None, status="queued", progress=0.0, speed=None, eta=None, error=None,
                   files=[], log=[], created=time.time(), started=None, finished=None)
         with self.lock:
             self.jobs[job["id"]] = job
@@ -97,14 +102,16 @@ class JobQueue:
 
     @staticmethod
     def public(j):
-        return {k: v for k, v in j.items() if k != "cmd"} | {"log": j["log"][-15:]}
+        return {k: v for k, v in j.items() if k not in ("cmd", "spec")} | {"log": j["log"][-15:]}
 
-    def cancel(self, jid: str) -> bool:
+    def cancel(self, jid: str, error: str | None = None) -> bool:
+        """Cancel a job. With an error it is recorded as failed (e.g. storage went away)."""
         with self.lock:
             j = self.jobs.get(jid)
             if not j or j["status"] not in ACTIVE:
                 return False
-            j["status"] = "cancelled"
+            j["status"] = "failed" if error else "cancelled"
+            j["error"] = error or j.get("error")
             j["finished"] = time.time()
             p = self.procs.get(jid)
         if p and p.poll() is None:
@@ -123,7 +130,12 @@ class JobQueue:
             j = self.jobs.get(jid)
             if not j or j["status"] in ACTIVE:
                 return None
-            return self.add(j["kind"], j["title"], j["cmd"], j["meta"])
+            return self.add(j["kind"], j["title"], j.get("spec"), j["meta"],
+                            cmd=None if j.get("spec") else j.get("cmd"))
+
+    def running_ids(self):
+        with self.lock:
+            return [k for k, j in self.jobs.items() if j["status"] == "running"]
 
     def counts(self):
         with self.lock:
@@ -143,10 +155,15 @@ class JobQueue:
                 j = self.jobs.get(jid)
                 if not j or j["status"] != "queued":
                     continue
-            err = self.preflight(j)
+            try:
+                err, cmd = self.prepare(j)
+            except Exception as exc:  # noqa: BLE001 - never kill the worker thread
+                err, cmd = f"Could not prepare download: {exc}", None
             with self.lock:
                 if j["status"] != "queued":
                     continue
+                if not err:
+                    j["cmd"] = cmd
                 if err:
                     j.update(status="failed", error=err, finished=time.time())
                     self._save()
@@ -175,6 +192,8 @@ class JobQueue:
         self.procs.pop(j["id"], None)
         with self.lock:
             if j["status"] == "cancelled":
+                pass
+            elif j["status"] == "failed":
                 pass
             elif rc == 0 and not self._looks_failed(j):
                 j.update(status="done", progress=100.0, eta=None)

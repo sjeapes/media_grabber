@@ -30,7 +30,7 @@ class Services:
         self.ha = HAClient(cfg)
         self.last_finished = None
         self.versions = {}
-        self.jobs = JobQueue(cfg, self.preflight, self.on_finish)
+        self.jobs = JobQueue(cfg, self.prepare, self.on_finish)
         self.next_pvr = None
 
     # --- checks -----------------------------------------------------------
@@ -49,9 +49,9 @@ class Services:
     def preflight(self, job) -> str | None:
         nas = self.storage.status()
         if not nas["healthy"]:
-            return "NAS not ready: " + "; ".join(nas["problems"])
+            return "Storage not ready: " + "; ".join(nas["problems"])
         if not nas.get("writable"):
-            return "NAS is full"
+            return "Storage is full"
         try:
             self.storage.ensure_dirs()
         except OSError as exc:
@@ -62,6 +62,51 @@ class Services:
                 and not self.vpn.running():
             return "VPN tunnel (used for links) is not running"
         return None
+
+    def build_cmd(self, spec: dict) -> list[str]:
+        t = spec["type"]
+        if t == "iplayer":
+            return self.dl.iplayer_cmd(spec["target"], series=spec.get("series", False),
+                                       subtitles=spec.get("subtitles", False))
+        if t == "pvr":
+            return self.dl.pvr_cmd(spec["entry"])
+        if t == "link":
+            return self.dl.ytdlp_cmd(spec["url"], audio_only=spec.get("audio_only", False),
+                                     playlist=spec.get("playlist", False))
+        raise ValueError(f"unknown job type {t}")
+
+    def prepare(self, job):
+        """Called by a worker just before running: check storage/VPN, then build the command
+        against the download location selected *now*."""
+        err = self.preflight(job)
+        if err:
+            return err, None
+        job["target"] = str(self.cfg.base_path)
+        if job.get("spec"):
+            return None, self.build_cmd(job["spec"])
+        if job.get("cmd"):  # job queued by v0.1.x
+            return None, job["cmd"]
+        return "Job has nothing to run", None
+
+    def storage_watch_loop(self):
+        """Stop running downloads if their storage disappears or HA's disk gets too full."""
+        while True:
+            time.sleep(15)
+            running = self.jobs.running_ids()
+            if not running:
+                continue
+            st = self.storage.status(probe=False)
+            if st["healthy"]:
+                continue
+            still_mounted = {c["path"] for c in self.storage.candidates()}
+            reason = "Stopped: " + "; ".join(st["problems"])
+            for jid in running:
+                job = self.jobs.jobs.get(jid)
+                target = job and job.get("target")
+                if target and target != st["path"] and target in still_mounted:
+                    continue  # user switched location; this job's own NAS is still fine
+                log.warning("%s (%s)", reason, job["title"] if job else jid)
+                self.jobs.cancel(jid, error=reason)
 
     def on_finish(self, job):
         self.last_finished = job
@@ -90,8 +135,8 @@ class Services:
             key = f"pvr:{entry['id']}"
             if self.jobs.find_active("iplayer", key):
                 continue
-            self.jobs.add("iplayer", f"Series recording: {entry['name']}", self.dl.pvr_cmd(entry),
-                          {"key": key, "pvr": entry["id"]})
+            self.jobs.add("iplayer", f"Series recording: {entry['name']}",
+                          {"type": "pvr", "entry": entry}, {"key": key, "pvr": entry["id"]})
             ids.append(entry["id"])
             n += 1
         if ids:
@@ -143,6 +188,7 @@ class Services:
         threading.Thread(target=self.vpn.supervise, daemon=True).start()
         self.jobs.start_workers(int(self.cfg.opt("max_concurrent_downloads")))
         threading.Thread(target=self.publisher_loop, daemon=True).start()
+        threading.Thread(target=self.storage_watch_loop, daemon=True).start()
         threading.Thread(target=self.pvr_loop, daemon=True).start()
         threading.Thread(target=self.update_tools, daemon=True).start()
 
@@ -188,11 +234,34 @@ def create_app(svc: Services) -> Flask:
             "ha_connected": svc.ha.enabled,
             "options": {k: cfg.opt(k) for k in ("tv_quality", "youtube_format",
                                                   "pvr_interval_hours", "vpn_for_youtube",
-                                                  "iplayer_requires_uk_vpn", "low_space_gb")}})
+                                                  "iplayer_requires_uk_vpn", "low_space_gb",
+                                                  "local_min_free_gb")}})
 
     @app.post("/api/nas/check")
     def nas_check():
         return jsonify(svc.storage.status(force_probe=True))
+
+    @app.get("/api/storage/options")
+    def storage_options():
+        local = svc.storage.cfg.local_path
+        try:
+            from .storage import disk
+            ha = disk(svc.cfg.media_root if svc.cfg.media_root.exists() else svc.cfg.data_dir)
+        except Exception:  # noqa: BLE001
+            ha = None
+        return jsonify({"choice": svc.storage.choice,
+                        "candidates": svc.storage.candidates(with_space=True),
+                        "local": {"path": str(local), "ha_disk": ha,
+                                  "min_free_gb": svc.cfg.opt("local_min_free_gb")}})
+
+    @app.post("/api/storage/select")
+    def storage_select():
+        try:
+            st = svc.storage.set_choice(str(body().get("choice", "")))
+        except ValueError as exc:
+            return bad(str(exc))
+        svc.publish()
+        return jsonify(st)
 
     @app.get("/api/files")
     def files():
@@ -231,9 +300,10 @@ def create_app(svc: Services) -> Flask:
         if svc.jobs.find_active("iplayer", target):
             return bad("Already in the queue", 409)
         title = (b.get("title") or target)[:200]
-        job = svc.jobs.add("iplayer", title, svc.dl.iplayer_cmd(
-            target, series=bool(b.get("series")), subtitles=bool(b.get("subtitles"))),
-            {"key": target, "series": bool(b.get("series"))})
+        job = svc.jobs.add("iplayer", title, {"type": "iplayer", "target": target,
+                                              "series": bool(b.get("series")),
+                                              "subtitles": bool(b.get("subtitles"))},
+                           {"key": target, "series": bool(b.get("series"))})
         return jsonify(svc.jobs.public(job)), 201
 
     # --- links (yt-dlp) -----------------------------------------------------
@@ -246,9 +316,10 @@ def create_app(svc: Services) -> Flask:
             return bad(str(exc))
         if svc.jobs.find_active("link", url):
             return bad("Already in the queue", 409)
-        job = svc.jobs.add("link", url, svc.dl.ytdlp_cmd(
-            url, audio_only=bool(b.get("audio_only")), playlist=bool(b.get("playlist"))),
-            {"key": url, "audio_only": bool(b.get("audio_only"))})
+        job = svc.jobs.add("link", url, {"type": "link", "url": url,
+                                         "audio_only": bool(b.get("audio_only")),
+                                         "playlist": bool(b.get("playlist"))},
+                           {"key": url, "audio_only": bool(b.get("audio_only"))})
         return jsonify(svc.jobs.public(job)), 201
 
     # --- queue ------------------------------------------------------------

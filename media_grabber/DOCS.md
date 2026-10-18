@@ -35,6 +35,15 @@ UK, iPlayer jobs are refused rather than leaking out on your home IP.
   working.
 - The **Storage** tab shows the location, free space and a write test.
 
+## Space tab (what's using the space?)
+
+Pick a storage location and press **Scan**. Media Grabber walks it once
+(read-only) and shows an expandable folder tree with sizes, the largest
+files, and any recycle-bin or snapshot folders. If the NAS reports much more
+used space than the scan finds, the rest is usually snapshots, the NAS recycle
+bin, or other shares on the same volume — check those in the NAS's own
+storage manager. Scanning a large NAS over the network can take a while.
+
 ## Options
 
 | Option | Default | Meaning |
@@ -54,6 +63,7 @@ UK, iPlayer jobs are refused rather than leaking out on your home IP.
 
 - `binary_sensor.media_grabber_nas_problem` — storage problem; attributes include `location`, `mode` (`nas`/`local`), `needs_choice`, `network_storage_found`
 - `sensor.media_grabber_nas_free` (GB free at the current location)
+- `sensor.media_grabber_disk_usage` — GB found by the last Space scan; attributes `top_level`, `biggest_subfolders`, `largest_files`, `recycle_bins`, `storage_used_gb`
 - `binary_sensor.media_grabber_uk_vpn`
 - `sensor.media_grabber_queue`
 - `sensor.media_grabber_last_download`

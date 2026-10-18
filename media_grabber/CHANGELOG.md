@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0
+
+- New **Space** tab: read-only scan of a storage location showing a folder
+  tree with sizes, largest files, recycle-bin/snapshot folders, and how much
+  used space isn't visible from the share. Nothing is ever deleted.
+- New `sensor.media_grabber_disk_usage` with the scan summary as attributes.
+
 ## 0.2.0
 
 - Download location is detected from Home Assistant's network storage

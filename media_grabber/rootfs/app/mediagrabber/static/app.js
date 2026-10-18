@@ -287,6 +287,82 @@ $("#nas-check").addEventListener("click", async (e) => {
 });
 loaders.storage = () => { loadLocation(); STATUS && renderStorage(STATUS.nas); };
 
+// ---- space (disk usage) ---------------------------------------------
+const fmtB = (b) => b >= 1024 ** 4 ? (b / 1024 ** 4).toFixed(2) + " TB" : b >= 1024 ** 3 ? (b / 1024 ** 3).toFixed(1) + " GB"
+  : b >= 1024 ** 2 ? Math.round(b / 1024 ** 2) + " MB" : Math.round(b / 1024) + " KB";
+let usageTimer = null;
+async function loadUsage() {
+  let u;
+  try { u = await api("usage"); } catch (e) { $("#usage").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  const sel = $("#scan-target"), prev = sel.value;
+  sel.innerHTML = u.targets.map((t) => `<option value="${esc(t.path)}">${esc(t.name)}${t.free_gb != null ? ` — ${t.free_gb} GB free` : ""}</option>`).join("");
+  sel.value = prev || (u.state.path && u.targets.some((t) => t.path === u.state.path) ? u.state.path : u.default || u.targets[0]?.path || "");
+  const st = u.state;
+  $("#scan-go").textContent = st.running ? "Cancel" : "Scan";
+  $("#scan-go").classList.toggle("danger", st.running);
+  $("#scan-progress").innerHTML = st.running
+    ? `<p class="note" style="margin-top:12px"><span class="spinner"></span> Scanning ${esc(st.path)} — ${st.files.toLocaleString()} files, ${fmtB(st.bytes)} so far${st.current ? ` · <span class="sm">${esc(st.current.slice(-60))}</span>` : ""}</p>`
+    : st.error ? `<p class="problems">${esc(st.error)}</p>`
+    : st.cancelled ? `<p class="hint">Last scan was cancelled.</p>` : "";
+  clearTimeout(usageTimer);
+  if (st.running && $("#tab-space").classList.contains("on")) usageTimer = setTimeout(loadUsage, 2000);
+  if (!u.root) { $("#usage").innerHTML = st.running ? "" : `<div class="empty">No scan yet. Pick a location and press Scan.</div>`; return; }
+  const d = st.disk, total = u.root.s;
+  const hidden = d ? d.used_gb * 1024 ** 3 - total : 0;
+  const rec = u.recycle_bins || [];
+  $("#usage").innerHTML = `
+    <div class="card">
+      <div class="headline">${esc(st.path)}</div>
+      <div class="stat-grid">
+        <div class="stat"><div class="k">Found by scan</div><div class="v">${fmtB(total)}</div></div>
+        ${d ? `<div class="stat"><div class="k">Storage used</div><div class="v">${d.used_gb} GB</div></div>
+        <div class="stat"><div class="k">Free</div><div class="v">${d.free_gb} GB</div></div>` : ""}
+        <div class="stat"><div class="k">Files</div><div class="v">${u.root.f.toLocaleString()}</div></div>
+      </div>
+      <p class="hint">Scanned ${ago(st.finished)}${st.errors ? ` · ${st.errors} items couldn't be read` : ""}.
+      ${hidden > 5 * 1024 ** 3 ? ` About <b>${fmtB(hidden)}</b> of used space isn't visible from here — usually snapshots, the NAS recycle bin, or other shares/volumes on the same disk. Check those in your NAS's own storage manager.` : ""}</p>
+      ${rec.length ? `<p class="banner warn" style="margin:10px 0 0">Recycle bin / snapshot folders: ${rec.map((r) => `${esc(r.path)} (${r.gb} GB)`).join(", ")} — empty these in the NAS's settings.</p>` : ""}
+    </div>
+    <div class="toolbar"><h2>Folders</h2><span class="sm note" style="margin:0">tap a folder to open it</span></div>
+    <div class="card tree" id="tree"></div>
+    <div class="toolbar"><h2>Largest files</h2></div>
+    <div class="card"><div class="files">${(u.largest_files || []).map((f) => `<div class="frow"><span class="fp">${esc(f.path)}</span><b>${f.gb} GB</b></div>`).join("") || `<div class="empty">None</div>`}</div></div>`;
+  renderTreeLevel($("#tree"), u.root, total, 0);
+}
+function renderTreeLevel(container, node, total, depth) {
+  const rows = node.children.map((k) => `
+    <div class="tnode" data-rel="${esc(k.rel)}">
+      <button class="trow" ${k.has_children ? "" : "disabled"} style="padding-left:${10 + depth * 16}px">
+        <span class="caret">${k.has_children ? "▸" : ""}</span>
+        <span class="tname">${esc(k.name)}${k.flag === "recycle" ? ' <span class="tag">recycle bin</span>' : ""}</span>
+        <span class="tsize">${fmtB(k.s)}</span>
+        <span class="tbar"><i style="width:${Math.max(1, (100 * k.s) / total).toFixed(1)}%"></i></span>
+        <span class="tpct">${((100 * k.s) / total).toFixed(1)}%</span>
+      </button><div class="tkids" hidden></div></div>`).join("");
+  const extra = [];
+  if (node.own_files > 0) extra.push(["files directly in this folder", node.own_files]);
+  if (node.small_folders > 0) extra.push(["smaller folders (under 50 MB each)", node.small_folders]);
+  container.innerHTML = rows + extra.map(([n, s]) => `<div class="trow muted" style="padding-left:${26 + depth * 16}px">
+      <span class="tname">${n}</span><span class="tsize">${fmtB(s)}</span><span class="tbar"><i style="width:${Math.max(1, (100 * s) / total).toFixed(1)}%"></i></span><span class="tpct">${((100 * s) / total).toFixed(1)}%</span></div>`).join("");
+  container.querySelectorAll(":scope > .tnode > .trow:not([disabled])").forEach((b) => b.addEventListener("click", async () => {
+    const holder = b.nextElementSibling, caret = b.querySelector(".caret");
+    if (!holder.hidden) { holder.hidden = true; caret.textContent = "▸"; return; }
+    if (!holder.dataset.loaded) {
+      try { renderTreeLevel(holder, await api("usage/children?rel=" + encodeURIComponent(b.parentElement.dataset.rel)), total, depth + 1); holder.dataset.loaded = "1"; }
+      catch (e) { toast(e.message); return; }
+    }
+    holder.hidden = false; caret.textContent = "▾";
+  }));
+}
+$("#scan-go").addEventListener("click", async () => {
+  try {
+    if ($("#scan-go").textContent === "Cancel") await api("usage/cancel", { method: "POST" });
+    else await api("usage/scan", { method: "POST", body: { path: $("#scan-target").value } });
+  } catch (e) { toast(e.message); }
+  setTimeout(loadUsage, 300);
+});
+loaders.space = loadUsage;
+
 // ---- VPN ------------------------------------------------------------
 function renderVpn(v) {
   const x = v.exit || {};

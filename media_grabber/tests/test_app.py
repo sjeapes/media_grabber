@@ -300,3 +300,42 @@ def test_index_page_served(env):
     r = env["c"].get("/")
     assert r.status_code == 200 and b"Media Grabber" in r.data
     assert env["c"].get("/static/app.js").status_code == 200
+
+
+# --- disk usage scan ------------------------------------------------------
+def test_usage_scan_tree_and_summary(env, monkeypatch):
+    import mediagrabber.usage as usage
+    monkeypatch.setattr(usage, "KEEP_BYTES", 1000)
+    nas, c = env["nas"], env["c"]
+    (nas / "Films" / "Big").mkdir(parents=True)
+    (nas / "Films" / "Big" / "movie.mkv").write_bytes(b"x" * 50_000)
+    (nas / "Films" / "tiny").mkdir()
+    (nas / "Films" / "tiny" / "a.txt").write_bytes(b"x" * 10)
+    (nas / "Photos").mkdir()
+    (nas / "Photos" / "p.jpg").write_bytes(b"x" * 20_000)
+    (nas / "#recycle").mkdir()
+    (nas / "#recycle" / "old.iso").write_bytes(b"x" * 30_000)
+    (nas / "readme.txt").write_bytes(b"x" * 5)
+    (nas / "link").symlink_to(nas / "Films")
+    # a different mount nested inside must be skipped when scanning /media
+    targets = c.get("/api/usage").json["targets"]
+    assert [t["name"] for t in targets] == ["Synology", "Home Assistant media folder"]
+    assert c.post("/api/usage/scan", json={"path": "/etc"}).status_code == 400
+    assert c.post("/api/usage/scan", json={"path": str(nas)}).status_code == 200
+    for _ in range(50):
+        u = c.get("/api/usage").json
+        if not u["state"]["running"]:
+            break
+        time.sleep(0.1)
+    assert u["root"]["s"] == 50_000 + 10 + 20_000 + 30_000 + 5  # symlink not followed
+    kids = [k["name"] for k in u["root"]["children"]]
+    assert kids == ["Films", "#recycle", "Photos"]
+    assert u["root"]["own_files"] == 5
+    assert u["recycle_bins"][0]["path"] == "#recycle"
+    films = c.get("/api/usage/children?rel=Films").json
+    assert [k["name"] for k in films["children"]] == ["Big"] and films["small_folders"] == 10
+    assert u["largest_files"][0]["path"] == "Films/Big/movie.mkv"
+    assert c.get("/api/usage/children?rel=nope").status_code == 404
+    # survives restart
+    svc2 = Services(env["cfg"], mounts_file=str(env["mounts"]))
+    assert svc2.usage.summary()["total"] == u["root"]["s"]

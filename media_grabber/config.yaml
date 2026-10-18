@@ -1,5 +1,5 @@
 name: Media Grabber
-version: "0.2.0"
+version: "0.3.0"
 slug: media_grabber
 description: BBC iPlayer (get_iplayer) and YouTube (yt-dlp) downloader that saves to your NAS, with NAS health and a split-tunnel UK VPN for iPlayer only.
 url: https://github.com/sjeapes/media_grabber/tree/main/media_grabber

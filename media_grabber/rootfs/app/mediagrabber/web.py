@@ -14,7 +14,8 @@ from flask import Flask, abort, jsonify, request, send_from_directory
 from .downloads import Downloads
 from .ha import HAClient
 from .jobs import JobQueue
-from .storage import Storage
+from .storage import Storage, disk
+from .usage import UsageScanner
 from .vpn import ConfigError, Vpn
 
 log = logging.getLogger("mediagrabber")
@@ -31,6 +32,7 @@ class Services:
         self.last_finished = None
         self.versions = {}
         self.jobs = JobQueue(cfg, self.prepare, self.on_finish)
+        self.usage = UsageScanner(cfg, on_done=self.publish)
         self.next_pvr = None
 
     # --- checks -----------------------------------------------------------
@@ -62,6 +64,19 @@ class Services:
                 and not self.vpn.running():
             return "VPN tunnel (used for links) is not running"
         return None
+
+    def usage_targets(self) -> list[dict]:
+        out = [{"path": c["path"], "name": c["name"],
+                "label": f"{c['usage']} storage · {c['source']}", "free_gb": c.get("free_gb")}
+               for c in self.storage.candidates(with_space=True)]
+        try:
+            ha = disk(self.cfg.media_root)
+        except Exception:  # noqa: BLE001
+            ha = {}
+        out.append({"path": str(self.cfg.media_root), "name": "Home Assistant media folder",
+                    "label": "HA's own disk (network storage inside it is skipped)",
+                    "free_gb": ha.get("free_gb")})
+        return out
 
     def build_cmd(self, spec: dict) -> list[str]:
         t = spec["type"]
@@ -119,6 +134,7 @@ class Services:
         try:
             self.ha.publish(self.storage.status(), self.vpn.status(), self.jobs.counts(),
                             self.last_finished)
+            self.ha.publish_usage(self.usage.summary())
         except Exception:  # noqa: BLE001
             log.exception("publish failed")
 
@@ -240,6 +256,37 @@ def create_app(svc: Services) -> Flask:
     @app.post("/api/nas/check")
     def nas_check():
         return jsonify(svc.storage.status(force_probe=True))
+
+    # --- disk usage (read-only) ------------------------------------------
+    @app.get("/api/usage")
+    def usage():
+        st = svc.storage.status(probe=False)
+        return jsonify({**svc.usage.summary(), "root": svc.usage.children(""),
+                        "targets": svc.usage_targets(), "default": st.get("path")})
+
+    @app.get("/api/usage/children")
+    def usage_children():
+        node = svc.usage.children(request.args.get("rel", ""))
+        return jsonify(node) if node else bad("Not in the last scan", 404)
+
+    @app.post("/api/usage/scan")
+    def usage_scan():
+        path = str(body().get("path", ""))
+        targets = {t["path"]: t for t in svc.usage_targets()}
+        if path not in targets:
+            return bad("Choose one of the listed storage locations")
+        try:
+            d = disk(path)
+        except Exception:  # noqa: BLE001
+            d = None
+        if not svc.usage.start(path, d):
+            return bad("A scan is already running", 409)
+        return jsonify(svc.usage.summary())
+
+    @app.post("/api/usage/cancel")
+    def usage_cancel():
+        svc.usage.cancel()
+        return jsonify({"ok": True})
 
     @app.get("/api/storage/options")
     def storage_options():

@@ -22,6 +22,7 @@
   <button data-tab="series">Series</button>
   <button data-tab="library">Library</button>
   <button data-tab="storage">Storage</button>
+  <button data-tab="space">Space</button>
   <button data-tab="vpn">VPN</button>
 </nav>
 
@@ -102,6 +103,20 @@
     <div id="nas"></div>
     <div id="hadisk"></div>
     <div id="versions" class="note"></div>
+  </section>
+
+  <!-- Space (disk usage) -->
+  <section id="tab-space" class="tab">
+    <div class="card">
+      <label for="scan-target">What's using the space?</label>
+      <div class="row">
+        <select id="scan-target" aria-label="Storage to scan"></select>
+        <button id="scan-go" class="primary">Scan</button>
+      </div>
+      <p class="hint">Read-only: this only measures folders, it never deletes anything. A large NAS can take a while — you can leave this page and come back.</p>
+      <div id="scan-progress"></div>
+    </div>
+    <div id="usage"></div>
   </section>
 
   <!-- VPN -->

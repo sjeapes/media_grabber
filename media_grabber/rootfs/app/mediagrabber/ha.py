@@ -65,3 +65,21 @@ class HAClient:
             self.state("sensor.media_grabber_last_download", last["title"][:250],
                        friendly_name=f"{DEVICE} last download", status=last["status"],
                        kind=last["kind"], finished=last.get("finished"), icon="mdi:television-play")
+
+    def publish_usage(self, summary: dict):
+        st = summary["state"]
+        if summary.get("total") is None and not st.get("running"):
+            return
+        disk = st.get("disk") or {}
+        self.state("sensor.media_grabber_disk_usage",
+                   round(summary["total"] / 1024 ** 3, 1) if summary.get("total") is not None else "unknown",
+                   friendly_name=f"{DEVICE} scanned usage", unit_of_measurement="GB",
+                   device_class="data_size", icon="mdi:folder-search",
+                   scanned_path=st.get("path"), running=st.get("running"),
+                   finished=st.get("finished"), files=st.get("files"), read_errors=st.get("errors"),
+                   storage_total_gb=disk.get("total_gb"), storage_used_gb=disk.get("used_gb"),
+                   storage_free_gb=disk.get("free_gb"),
+                   top_level=summary.get("top_level", []),
+                   biggest_subfolders=summary.get("biggest_subfolders", []),
+                   largest_files=summary.get("largest_files", []),
+                   recycle_bins=summary.get("recycle_bins", []))

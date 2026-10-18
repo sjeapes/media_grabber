@@ -10,6 +10,8 @@
 - VPN tunnel errors from wireproxy now appear in the add-on log.
 - The storage watchdog only stops downloads after ~45 s of continuous trouble,
   not on a single slow check.
+- A download interrupted by an add-on restart (e.g. an update) starts again
+  automatically instead of being marked failed.
 - Fix: a retry that succeeded could be reported as failed because of the
   previous attempt's error lines.
 

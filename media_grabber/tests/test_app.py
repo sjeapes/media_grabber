@@ -302,14 +302,20 @@ def test_pvr_add_list_delete_run(env, monkeypatch):
     assert c.delete(f"/api/pvr/{item['id']}").json["ok"]
 
 
-def test_running_jobs_marked_interrupted_on_restart(env):
+def test_running_jobs_restart_after_addon_restart(env):
     cfg = env["cfg"]
     (cfg.data_dir / "jobs.json").write_text(json.dumps([{
         "id": "x1", "kind": "link", "title": "t", "cmd": ["true"], "meta": {}, "status": "running",
         "progress": 40, "speed": None, "eta": None, "error": None, "files": [], "log": [],
         "created": 0, "started": 0, "finished": None}]))
     svc2 = Services(cfg, mounts_file=str(env["mounts"]))
-    assert svc2.jobs.jobs["x1"]["status"] == "failed"
+    assert svc2.jobs.jobs["x1"]["status"] == "queued"
+    svc2.jobs.start_workers(1)
+    for _ in range(50):
+        if svc2.jobs.jobs["x1"]["status"] == "done":
+            break
+        time.sleep(0.1)
+    assert svc2.jobs.jobs["x1"]["status"] == "done"
 
 
 def test_index_page_served(env):

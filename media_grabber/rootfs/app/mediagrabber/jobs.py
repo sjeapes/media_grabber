@@ -58,7 +58,9 @@ class JobQueue:
         try:
             for j in json.loads(self.path.read_text()):
                 if j["status"] == "running":
-                    j.update(status="failed", error="Interrupted by restart")
+                    # add-on restarted mid-download (update, reboot): start it again
+                    j.update(status="queued", progress=0.0, speed=None, eta=None, started=None)
+                    j.setdefault("log", []).append("--- Interrupted by a restart — starting again ---")
                 self.jobs[j["id"]] = Job(j)
         except (OSError, ValueError, KeyError):
             return

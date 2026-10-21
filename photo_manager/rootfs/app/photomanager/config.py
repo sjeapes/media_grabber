@@ -27,6 +27,7 @@ class Config:
     ha_api: str = "http://supervisor/core/api"
     darktable: str = "darktable-cli"
     dt_timeout: int = 1200        # seconds allowed for one photo
+    template_dir: Path = Path("/config")   # where you put .xmp templates (the add-on's config folder)
     media_root: Path = Path("/media")
     share_root: Path = Path("/share")
     # Set by Storage.resolve(): the root of the selected NAS (None = nothing usable yet)
@@ -57,6 +58,7 @@ def load() -> Config:
         supervisor_token=os.environ.get("SUPERVISOR_TOKEN"),
         darktable=os.environ.get("PM_DARKTABLE", "darktable-cli"),
         dt_timeout=int(os.environ.get("PM_DT_TIMEOUT", "1200")),
+        template_dir=Path(os.environ.get("PM_TEMPLATE_DIR", "/config")),
         media_root=Path(os.environ.get("PM_MEDIA_ROOT", "/media")),
         share_root=Path(os.environ.get("PM_SHARE_ROOT", "/share")),
     )

@@ -12,6 +12,7 @@ let pollTimer = null;
 let wasRunning = false;
 let wasDeveloping = false;
 let wasUploading = false;
+let wasTkBusy = false;
 
 async function api(path, opts = {}) {
   const init = { method: opts.method || "GET", headers: {} };
@@ -53,14 +54,15 @@ async function loadStatus() {
   let next = 15000;
   try {
     STATUS = await api("status");
-    const running = STATUS.scan.running || STATUS.develop.running || STATUS.upload.running;
+    const running = STATUS.scan.running || STATUS.develop.running || STATUS.upload.running || STATUS.takeout.scanning || STATUS.takeout.job;
     next = running ? 1500 : 15000;
     renderPills(); renderBanner(); renderScanCard();
     if (onTab("storage")) { renderFolders(); renderNasCard(); }
     if (onTab("develop") && (STATUS.develop.running || wasDeveloping)) loadDevelop();
     wasDeveloping = STATUS.develop.running;
-    if (onTab("google") && (STATUS.upload.running || wasUploading)) loadGoogle();
-    wasUploading = STATUS.upload.running;
+    const tkBusy = STATUS.takeout.scanning || STATUS.takeout.job;
+    if (onTab("google") && (STATUS.upload.running || wasUploading || tkBusy || wasTkBusy)) loadGoogle();
+    wasUploading = STATUS.upload.running; wasTkBusy = tkBusy;
     if (running && Date.now() - (loadStatus._reportAt || 0) > 3000) { loadStatus._reportAt = Date.now(); loadReport(); }
     if (wasRunning && !running) loadReport();
     wasRunning = running;
@@ -77,6 +79,8 @@ function renderPills() {
   if (scan.running) html += `<button class="pill" data-go="library"><span class="spinner"></span>Scanning</button>`;
   const dv = STATUS.develop;
   if (dv.running) html += `<button class="pill" data-go="develop"><span class="spinner"></span>Developing ${fmtN(dv.done)}${dv.total ? " of " + fmtN(dv.total) : ""}</button>`;
+  if (STATUS.takeout.scanning) html += `<button class="pill" data-go="google"><span class="spinner"></span>Reading Takeout</button>`;
+  else if (STATUS.takeout.job) html += `<button class="pill" data-go="google"><span class="spinner"></span>Uploading selection</button>`;
   const up = STATUS.upload;
   if (up.running) html += `<button class="pill" data-go="google"><span class="spinner"></span>Uploading ${fmtN(up.done)}${up.total ? " of " + fmtN(up.total) : ""}</button>`;
   if (!dv.running && dv.enabled) html += `<button class="pill" data-go="develop"><span class="dot ok"></span>Developing on</button>`;
@@ -273,7 +277,7 @@ function pickFolder({ title, kind, start }) {
     const newname = $("#picker-newname");
     let cur = "", info = null;
     $("#picker-title").textContent = title;
-    $("#picker-new").hidden = kind === "photo" || kind === "scope";
+    $("#picker-new").hidden = ["photo", "scope", "takeout"].includes(kind);
     newname.value = "";
 
     const target = () => {
@@ -307,7 +311,9 @@ function pickFolder({ title, kind, start }) {
         ? info.dirs.map((d) => `<button data-dir="${esc(d)}">📁 ${esc(d)}</button>`).join("")
         : `<div class="none">No sub-folders here</div>`;
       list.querySelectorAll("[data-dir]").forEach((b) => b.addEventListener("click", () => go((cur ? cur + "/" : "") + b.dataset.dir)));
-      $("#picker-info").textContent = kind === "photo" || kind === "scope"
+      $("#picker-info").textContent = kind === "takeout"
+        ? "Choose the folder that holds your Takeout .zip files (or the extracted Takeout folder), then press Use this folder."
+        : kind === "photo" || kind === "scope"
         ? (info.is_root ? "Open the folder you want, then press Use this folder."
           : `${fmtN(info.cr2_here)} CR2 photo${info.cr2_here === 1 ? "" : "s"} directly in this folder (sub-folders are included automatically).`)
         : "";
@@ -393,6 +399,7 @@ function renderDevelop() {
     </div>
     <p class="note">${fmtN(c.developed)} developed so far · ${fmtN(c.photos)} photos in the library. The overnight window is set in the add-on's Configuration tab.</p>`;
 
+  if (!DV_SET_DONE) renderDvSettings();
   $("#dv-enable").addEventListener("change", (e) => devSettings({ enabled: e.target.checked }, e.target.checked ? "Developing switched on" : "Developing switched off"));
   document.querySelectorAll("input[name=dv-mode]").forEach((r) => r.addEventListener("change", () => devSettings({ output_mode: r.value }, "Saved")));
   $("#dv-skip").addEventListener("change", (e) => devSettings({ skip_with_jpeg: e.target.checked }, "Saved"));
@@ -438,9 +445,10 @@ $("#show-thumbs").addEventListener("change", (e) => {
 });
 
 // ---- google photos ----------------------------------------------------------------------
-let GP = null, gpAuth = null;
+let GP = null, gpAuth = null, GPSEG = "upload";
 async function loadGoogle() {
   try { GP = await api("google"); } catch (e) { $("#google").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  if (GPSEG === "find" && $("#gp-body") && $("#tk-status")) { await loadTakeoutState(); return; }   // keep the results as they are
   renderGoogle();
 }
 async function gpPost(path, body, msg) {
@@ -450,8 +458,14 @@ async function gpPost(path, body, msg) {
 }
 function renderGoogle() {
   if (!GP) return;
+  $("#google").innerHTML = `<div class="seg"><button class="chip ${GPSEG === "upload" ? "on" : ""}" data-seg="upload">Upload</button>
+    <button class="chip ${GPSEG === "find" ? "on" : ""}" data-seg="find">Find photos not in Google Photos</button></div><div id="gp-body"></div>`;
+  $("#google").querySelectorAll("[data-seg]").forEach((b) => b.addEventListener("click", () => { GPSEG = b.dataset.seg; renderGoogle(); }));
+  if (GPSEG === "find") { renderFind($("#gp-body")); return; }
+  renderUpload($("#gp-body"));
+}
+function renderUpload(box) {
   const g = GP, st = g.state, c = g.counts;
-  const box = $("#google");
   if (!g.configured) {
     box.innerHTML = `<div class="card"><div class="headline"><span class="dot warn"></span>Google Photos isn't set up yet</div>
       <p class="hint">Photo Manager adds your developed JPEGs to Google Photos (no albums). It can only <b>add</b> photos — it can't see, change or delete anything already there. One-off setup, about five minutes:</p>
@@ -613,11 +627,326 @@ $("#dups-reload").addEventListener("click", () => loadDups());
 $("#q-forget").addEventListener("click", async () => { try { const r = await api("quarantine/forget-missing", { method: "POST" }); toast(`${plural(r.forgotten, "entry", "entries")} cleared`); } catch (e) { toast(e.message); } loadQuarantine(); });
 loaders.quarantine = () => { loadStatus(); loadDups(); loadQuarantine(); };
 
+
+// ---- shared image helpers --------------------------------------------------------------
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const thumbSrc = (it, size) => (it.developed ? `api/thumb?dev=${encodeURIComponent(it.rel)}` : `api/thumb?rel=${encodeURIComponent(it.rel)}`) + (size ? `&size=${size}` : "");
+function loadImgs(root) {
+  root.querySelectorAll("img[data-src]").forEach((img) => {
+    img.addEventListener("error", () => { img.style.visibility = "hidden"; }, { once: true });
+    img.src = img.dataset.src;
+  });
+}
+function insideScope(rel) {   // a folder picked on the NAS -> relative to the photo folder, or null
+  const photo = STATUS.nas.folders.photo.rel;
+  if (rel === photo) return "";
+  if (rel.startsWith(photo + "/")) return rel.slice(photo.length + 1);
+  toast("Pick a folder inside your photo folder"); return null;
+}
+async function pickInPhotoFolder(title, current) {
+  const photo = STATUS.nas.folders.photo.rel;
+  const rel = await pickFolder({ title, kind: "scope", start: photo + (current ? "/" + current : "") });
+  return rel === null ? null : insideScope(rel);
+}
+
+// ---- viewer (full-screen, developed vs camera preview) ----------------------------------
+const VIEW = { items: [], i: 0, mode: "dev" };
+function openViewer(items, i) {
+  VIEW.items = items; VIEW.i = i; VIEW.mode = items[i].developed ? "dev" : "raw";
+  $("#viewer").hidden = false; showViewer();
+}
+function showViewer() {
+  const it = VIEW.items[VIEW.i]; if (!it) return;
+  const dev = it.developed && VIEW.mode === "dev";
+  const enc = encodeURIComponent(it.rel);
+  const img = $("#viewer-img"); img.style.visibility = "visible";
+  img.src = dev ? `api/thumb?dev=${enc}&size=l` : `api/thumb?rel=${enc}&size=l`;
+  $("#viewer-title").textContent = it.rel;
+  $("#viewer-info").textContent = `${VIEW.i + 1} / ${VIEW.items.length}` + (it.taken ? " · " + it.taken : "") + (it.uploaded ? " · in Google Photos" : "");
+  const m = $("#viewer-mode"); m.hidden = !it.developed;
+  m.textContent = dev ? "Developed · tap for camera preview" : it.developed ? "Camera preview · tap for developed" : "Camera preview";
+  $("#viewer-prev").hidden = VIEW.i === 0; $("#viewer-next").hidden = VIEW.i >= VIEW.items.length - 1;
+}
+const stepViewer = (d) => { const n = VIEW.i + d; if (n >= 0 && n < VIEW.items.length) { VIEW.i = n; if (!VIEW.items[n].developed) VIEW.mode = "raw"; showViewer(); } };
+$("#viewer-prev").addEventListener("click", () => stepViewer(-1));
+$("#viewer-next").addEventListener("click", () => stepViewer(1));
+$("#viewer-x").addEventListener("click", () => { $("#viewer").hidden = true; $("#viewer-img").removeAttribute("src"); });
+$("#viewer-mode").addEventListener("click", () => { VIEW.mode = VIEW.mode === "dev" ? "raw" : "dev"; showViewer(); });
+$("#viewer-img").addEventListener("error", () => { $("#viewer-img").style.visibility = "hidden"; $("#viewer-info").textContent = "No preview available for this photo"; });
+document.addEventListener("keydown", (e) => {
+  if ($("#viewer").hidden) return;
+  if (e.key === "ArrowLeft") stepViewer(-1); else if (e.key === "ArrowRight") stepViewer(1); else if (e.key === "Escape") $("#viewer-x").click();
+});
+
+// ---- gallery ---------------------------------------------------------------------------------
+const GAL = { filter: "all", days: 7, folder: "", q: "", items: [], total: 0, counts: null, loading: false };
+try { GAL.filter = localStorage.getItem("pm-gal") || "all"; } catch { /* ignore */ }
+function galBar() {
+  const c = GAL.counts || { all: 0, recent: 0, developed: 0, undeveloped: 0 };
+  const chip = (id, label, n) => `<button class="chip ${GAL.filter === id ? "on" : ""}" data-f="${id}">${label}${n != null ? ` (${fmtN(n)})` : ""}</button>`;
+  $("#gal-bar").innerHTML = `<div class="chips">${chip("all", "All", c.all)}${chip("recent", "Recently developed", c.recent)}${chip("developed", "Developed", c.developed)}${chip("undeveloped", "Not developed", c.undeveloped)}</div>
+    <div class="toolrow">
+      ${GAL.filter === "recent" ? `<select id="gal-days" aria-label="How recent"><option value="1">Last day</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="365">Last year</option></select>` : ""}
+      <button class="ghost" id="gal-folder">${GAL.folder ? "Folder: " + esc(GAL.folder) : "All folders"} ▾</button>
+      ${GAL.folder ? `<button class="ghost" id="gal-folder-x" aria-label="Clear folder">✕</button>` : ""}
+      <input id="gal-q" placeholder="Search file names" value="${esc(GAL.q)}" autocomplete="off" style="min-width:120px">
+    </div>`;
+  document.querySelectorAll("#gal-bar [data-f]").forEach((b) => b.addEventListener("click", () => { GAL.filter = b.dataset.f; try { localStorage.setItem("pm-gal", GAL.filter); } catch { /* ignore */ } loadGallery(); }));
+  const days = $("#gal-days"); if (days) { days.value = String(GAL.days); days.addEventListener("change", () => { GAL.days = Number(days.value); loadGallery(); }); }
+  $("#gal-folder").addEventListener("click", async () => { const r = await pickInPhotoFolder("Show only this folder", GAL.folder); if (r !== null) { GAL.folder = r; loadGallery(); } });
+  const fx = $("#gal-folder-x"); fx && fx.addEventListener("click", () => { GAL.folder = ""; loadGallery(); });
+  $("#gal-q").addEventListener("input", (e) => { clearTimeout(galBar._t); galBar._t = setTimeout(() => { GAL.q = e.target.value.trim(); loadGallery(false); }, 350); });
+}
+function galUrl(offset) {
+  const p = new URLSearchParams({ filter: GAL.filter, days: GAL.days, folder: GAL.folder, q: GAL.q, offset, limit: 60 });
+  return "gallery?" + p;
+}
+async function loadGallery(rebar = true) {
+  if (!STATUS) await loadStatus();
+  if (!STATUS.nas.folders.photo.rel) { $("#gal-bar").innerHTML = ""; $("#gal-grid").innerHTML = `<div class="empty" style="grid-column:1/-1">Choose your photo folder on the Storage tab and scan it first.</div>`; $("#gal-more").innerHTML = ""; return; }
+  let r;
+  try { r = await api(galUrl(0)); } catch (e) { $("#gal-grid").innerHTML = `<div class="empty" style="grid-column:1/-1">${esc(e.message)}</div>`; return; }
+  GAL.items = r.items; GAL.total = r.total; GAL.counts = r.counts;
+  if (rebar) galBar();
+  renderGalGrid();
+}
+function cellHtml(it, i, extra = "") {
+  return `<div class="cell ${extra}" data-i="${i}" data-rel="${esc(it.rel)}"><img alt="" loading="lazy" data-src="${esc(thumbSrc(it))}">
+    <span class="badges">${it.developed ? `<span class="badge ok">Developed</span>` : ""}${it.uploaded ? `<span class="badge">Google</span>` : ""}</span></div>`;
+}
+function renderGalGrid() {
+  const g = $("#gal-grid");
+  if (!GAL.items.length) { g.innerHTML = `<div class="empty" style="grid-column:1/-1">${GAL.filter === "recent" ? "Nothing has been developed in that time." : "No photos match."}</div>`; $("#gal-more").innerHTML = ""; return; }
+  g.innerHTML = GAL.items.map((it, i) => cellHtml(it, i)).join("");
+  loadImgs(g);
+  g.querySelectorAll(".cell").forEach((c) => c.addEventListener("click", () => openViewer(GAL.items, Number(c.dataset.i))));
+  $("#gal-more").innerHTML = GAL.items.length < GAL.total ? `<button class="ghost" id="gal-more-btn">Show more (${fmtN(GAL.total - GAL.items.length)} more)</button>` : `<span class="sm hint">${fmtN(GAL.total)} photos</span>`;
+  const m = $("#gal-more-btn");
+  m && m.addEventListener("click", async () => {
+    m.disabled = true;
+    try { const r = await api(galUrl(GAL.items.length)); GAL.items = GAL.items.concat(r.items); GAL.total = r.total; } catch (e) { toast(e.message); }
+    renderGalGrid();
+  });
+}
+loaders.gallery = () => { loadStatus(); loadGallery(); };
+
+// ---- darktable settings -----------------------------------------------------------------------------
+let DV_SET_DONE = false;
+const SIZES = [[0, "Full size"], [4000, "4000 px"], [3000, "3000 px"], [2048, "2048 px"], [1600, "1600 px"]];
+function renderDvSettings() {
+  if (!DEV) return;
+  DV_SET_DONE = true;
+  const o = DEV.dt_options, dt = DEV.dt;
+  const sizes = SIZES.some(([v]) => v === dt.max_size) ? SIZES : [...SIZES, [dt.max_size, `${dt.max_size} px`]];
+  const tpl = ["", ...DEV.templates];
+  const opts = (list, sel, val = (x) => x.id, lab = (x) => x.label) => list.map((x) => `<option value="${esc(val(x))}" ${val(x) === sel ? "selected" : ""}>${esc(lab(x))}</option>`).join("");
+  $("#develop-settings").innerHTML = `<div class="card"><h3>Look and quality</h3>
+    <p class="hint" style="margin-top:0">These apply to photos developed from now on. Existing JPEGs are never replaced, so changing a setting doesn't touch earlier results.</p>
+    ${o.presets.map((p) => `<label class="opt ${dt.preset === p.id ? "sel" : ""}"><input type="radio" name="dvs-preset" value="${p.id}" ${dt.preset === p.id ? "checked" : ""}><span><b>${esc(p.label)}</b><span class="sm">${esc(p.help)}</span></span></label>`).join("")}
+    <div class="fgrid">
+      <label>JPEG quality (50–100)<input id="dvs-quality" type="number" min="50" max="100" placeholder="${DEV.jpeg_quality} (add-on default)" value="${dt.quality ?? ""}"></label>
+      <label>Longest side<select id="dvs-size">${sizes.map(([v, l]) => `<option value="${v}" ${v === dt.max_size ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+      <label>Colour space<select id="dvs-colour">${opts(o.colours, dt.colour)}</select></label>
+      <label>Rendering intent<select id="dvs-intent">${opts(o.intents, dt.intent)}</select></label>
+      <label style="grid-column:1/-1">XMP template (optional)<select id="dvs-xmp">${opts(tpl.map((n) => ({ id: n, label: n || "None" })), dt.xmp_template)}</select></label>
+    </div>
+    <p class="hint">${DEV.templates.length ? "" : "No templates found. "}To apply your own look, export a <code>.xmp</code> from the darktable desktop app and put it in this add-on's config folder (<code>/addon_configs/…_photo_manager</code>); it appears in the list above. It is applied to every photo.</p>
+    <label class="check"><input type="checkbox" id="dvs-hq" ${dt.hq ? "checked" : ""}><span><b>High-quality resampling</b><span class="sm">Slower but sharper when a size limit is set.</span></span></label>
+    <div class="row end"><button class="ghost" id="dvs-reset">Reset to defaults</button><button class="primary" id="dvs-save">Save settings</button></div>
+    <div class="sec"><h3>Try it on one photo</h3><p class="hint" style="margin-top:0">Develops a small preview with the settings above (even if not saved yet) and shows it next to the camera's own picture. Nothing is saved to your NAS.</p>
+      <div class="row"><button class="ghost" id="dvs-try">Choose a photo…</button></div><div id="dv-try"></div></div></div>`;
+  document.querySelectorAll("input[name=dvs-preset]").forEach((r) => r.addEventListener("change", () => {
+    document.querySelectorAll("#develop-settings .opt").forEach((l) => l.classList.toggle("sel", l.querySelector("input").checked));
+  }));
+  $("#dvs-save").addEventListener("click", async () => {
+    try { await api("develop/dt", { method: "POST", body: dvForm() }); toast("Settings saved"); } catch (e) { toast(e.message); return; }
+    DV_SET_DONE = false; loadDevelop();
+  });
+  $("#dvs-reset").addEventListener("click", async () => {
+    try { await api("develop/dt", { method: "POST", body: { ...o.defaults } }); toast("Back to the defaults"); } catch (e) { toast(e.message); return; }
+    DV_SET_DONE = false; loadDevelop();
+  });
+  $("#dvs-try").addEventListener("click", async () => { const rel = await pickPhoto(); if (rel) dvTry(rel); });
+}
+function dvForm() {
+  const q = $("#dvs-quality").value.trim();
+  return { preset: (document.querySelector("input[name=dvs-preset]:checked") || {}).value, quality: q === "" ? null : Number(q),
+    max_size: Number($("#dvs-size").value), hq: $("#dvs-hq").checked, colour: $("#dvs-colour").value, intent: $("#dvs-intent").value,
+    xmp_template: $("#dvs-xmp").value };
+}
+function pickPhoto() {
+  return new Promise(async (resolve) => {
+    const root = $("#photopicker"), grid = $("#pp-grid");
+    const done = (v) => { root.hidden = true; $("#pp-x").onclick = root.onclick = null; resolve(v); };
+    $("#pp-x").onclick = () => done(null); root.onclick = (e) => { if (e.target === root) done(null); };
+    grid.innerHTML = `<div class="none"><span class="spinner"></span></div>`; root.hidden = false;
+    let r;
+    try { r = await api("gallery?filter=all&limit=48"); } catch (e) { grid.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+    if (!r.items.length) { grid.innerHTML = `<div class="empty" style="grid-column:1/-1">No photos yet — scan your library first.</div>`; return; }
+    grid.innerHTML = r.items.map((it, i) => cellHtml({ ...it, developed: false }, i)).join("");
+    loadImgs(grid);
+    grid.querySelectorAll(".cell").forEach((c) => c.addEventListener("click", () => done(c.dataset.rel)));
+  });
+}
+async function dvTry(rel) {
+  const box = $("#dv-try");
+  box.innerHTML = `<p class="hint"><span class="spinner"></span> Developing a preview of <code>${esc(rel)}</code>… this can take a minute.</p>`;
+  try { await api("develop/preview", { method: "POST", body: { rel, dt: dvForm() } }); } catch (e) { box.innerHTML = `<p class="hint danger">${esc(e.message)}</p>`; return; }
+  let s;
+  for (let n = 0; n < 400; n++) { await sleep(1000); try { s = await api("develop/preview"); } catch { continue; } if (!s.running) break; }
+  if (!s || s.running) { box.innerHTML = `<p class="hint danger">That took too long.</p>`; return; }
+  if (s.error) { box.innerHTML = `<p class="hint danger">${esc(s.error)}</p>`; return; }
+  const enc = encodeURIComponent(rel);
+  box.innerHTML = `<div class="compare"><figure><img alt="" data-src="api/thumb?rel=${enc}&size=l"><figcaption>Camera's own preview</figcaption></figure>
+    <figure><img alt="" data-src="api/develop/preview.jpg?t=${Date.now()}"><figcaption>darktable with these settings</figcaption></figure></div>`;
+  wireImages(box);
+}
+
+// ---- find photos that aren't in Google Photos (Google Takeout) -----------------------------------------------
+let TK = null;
+const FIND = { folder: "", possible: false, items: [], total: 0, folders: [], foldersTotal: 0, counts: null, selFolders: new Set(), selRels: new Set() };
+const dirOf = (rel) => (rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "");
+function renderFind(box) {
+  box.innerHTML = `<details class="card" id="tk-guide" ${TK && TK.counts.entries ? "" : "open"}><summary><b>How to get your Google Takeout export</b></summary>
+    <ol class="steps">
+      <li>Go to <a href="https://takeout.google.com" target="_blank" rel="noopener noreferrer">takeout.google.com</a> and sign in with the Google account that holds your photos.</li>
+      <li>Press <b>Deselect all</b>, then tick only <b>Google Photos</b>. (Optional: under “All photo albums included” choose just the years or albums you want to check.)</li>
+      <li>Press <b>Next step</b> and choose: <b>Send download link via email</b>, frequency <b>Export once</b>, file type <b>.zip</b>, size <b>50 GB</b> (fewer files).</li>
+      <li>Press <b>Create export</b>. Google emails you when it's ready — from minutes to a couple of days for a big library. Download <b>all</b> the .zip parts (the links last 7 days).</li>
+      <li>Copy the .zip files — <b>don't unzip them</b> — into a folder on your NAS (for example <code>Takeout</code>), then choose that folder below.</li>
+    </ol>
+    <p class="hint">Photo Manager reads only the small <code>.json</code> info files inside the zips (file name and date taken). It never extracts the photos and never changes the folder. The export is a snapshot: photos added to Google Photos afterwards aren't in it, so export again if your library has changed a lot. If you delete the zips, a re-scan forgets what it learned.</p></details>
+    <div class="card"><div class="row between"><div><div class="headline">Takeout folder</div><p class="hint" id="tk-folder" style="margin-top:4px"></p></div>
+      <div class="row"><button class="ghost" id="tk-choose">Choose…</button><button class="primary" id="tk-scan">Scan Takeout</button></div></div>
+      <div id="tk-status"></div></div>
+    <div id="tk-job"></div><div id="tk-results"></div>`;
+  $("#tk-choose").addEventListener("click", async () => {
+    const rel = await pickFolder({ title: "Your Takeout folder", kind: "takeout", start: TK && TK.folder || "" });
+    if (rel === null) return;
+    try { await api("takeout/folder", { method: "POST", body: { folder: rel } }); toast("Folder saved"); } catch (e) { toast(e.message); }
+    loadTakeoutState();
+  });
+  $("#tk-scan").addEventListener("click", async () => {
+    try { await api("takeout/scan", { method: "POST" }); wasTkBusy = true; FIND.needsLoad = true; } catch (e) { toast(e.message); }
+    await loadStatus(); loadTakeoutState();
+  });
+  loadTakeoutState(true);
+}
+async function loadTakeoutState(first = false) {
+  try { TK = await api("takeout"); } catch (e) { return; }
+  const st = TK.state, c = TK.counts;
+  $("#tk-folder").innerHTML = TK.folder ? `<code>${esc(TK.folder)}</code>${TK.folder_ok ? "" : ` <span class="danger">— not found on the NAS</span>`}` : "Not chosen yet";
+  $("#tk-scan").disabled = !TK.folder || !TK.folder_ok || st.running;
+  $("#tk-status").innerHTML = st.running
+    ? `<p class="hint"><span class="spinner"></span> ${st.phase === "reading" ? "Reading" : "Looking at"} <code>${esc(st.current || "")}</code></p><div class="row end"><button class="ghost" id="tk-cancel">Stop</button></div>`
+    : st.error ? `<p class="hint danger">${esc(st.error)}</p>`
+    : c.entries ? `<p class="hint">${fmtN(c.entries)} photos known to Google from ${plural(c.sources, "file", "files")}${st.finished ? ` · scanned ${ago(st.finished)}` : ""}${st.errors ? ` · <span class="danger">${plural(st.errors, "file", "files")} couldn't be read (${esc((st.error_samples || [])[0] || "")})</span>` : ""}</p>`
+    : st.finished ? `<p class="hint danger">No photo information was found in that folder. Check it holds the Takeout .zip files.</p>` : `<p class="hint">Not scanned yet.</p>`;
+  const cancel = $("#tk-cancel"); cancel && cancel.addEventListener("click", () => api("takeout/cancel", { method: "POST" }));
+  renderTkJob();
+  if ((first || (!st.running && FIND.needsLoad)) && c.entries && !st.running) { FIND.needsLoad = false; loadFind(); }
+  if (st.running) FIND.needsLoad = true;
+  if (!c.entries) $("#tk-results").innerHTML = "";
+}
+function renderTkJob() {
+  const j = TK.job, el = $("#tk-job");
+  if (j.running) {
+    const pct = j.total ? Math.round(100 * (j.phase === "developing" ? j.developed : j.to_develop + j.uploaded) / (j.total + j.to_develop)) : 0;
+    el.innerHTML = `<div class="card"><div class="headline"><span class="spinner"></span>${j.phase === "developing" ? `Developing ${fmtN(j.to_develop)} photo${j.to_develop === 1 ? "" : "s"} first…` : `Uploading ${fmtN(j.total)} photo${j.total === 1 ? "" : "s"} to Google Photos…`}</div>
+      <div class="progress"><i style="width:${Math.min(100, pct)}%"></i></div><div class="row end"><button class="ghost" id="tk-job-stop">Stop</button></div></div>`;
+    $("#tk-job-stop").addEventListener("click", () => api("takeout/upload/cancel", { method: "POST" }));
+  } else if (j.finished) {
+    el.innerHTML = `<div class="card"><div class="headline"><span class="dot ${j.error || j.failed ? "warn" : "ok"}"></span>Last upload: ${plural(j.uploaded, "photo", "photos")} sent${j.failed ? `, ${fmtN(j.failed)} failed` : ""}</div>
+      ${j.error ? `<p class="hint danger">${esc(j.error)}</p>` : ""}${j.stopped ? `<p class="hint">${esc(j.stopped)}</p>` : ""}</div>`;
+  } else el.innerHTML = "";
+}
+async function loadFind(more = false) {
+  const res = $("#tk-results");
+  if (!more) res.innerHTML = `<div class="empty"><span class="spinner"></span></div>`;
+  let r;
+  try { r = await api(`takeout/missing?${new URLSearchParams({ folder: FIND.folder, possible: FIND.possible ? 1 : 0, offset: more ? FIND.items.length : 0, limit: 60 })}`); }
+  catch (e) { res.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  FIND.items = more ? FIND.items.concat(r.items) : r.items; FIND.total = r.total; FIND.folders = r.folders; FIND.foldersTotal = r.folders_total; FIND.counts = r.counts;
+  if (!more) { FIND.selFolders.clear(); FIND.selRels.clear(); }
+  renderFindResults();
+}
+function selCount() {
+  let n = 0; const byDir = new Map(FIND.folders.map((f) => [f.path, f.count]));
+  FIND.selFolders.forEach((d) => { n += byDir.get(d) || 0; });
+  FIND.selRels.forEach((r) => { if (!FIND.selFolders.has(dirOf(r))) n += 1; });
+  return n;
+}
+const isSel = (rel) => FIND.selRels.has(rel) || FIND.selFolders.has(dirOf(rel));
+function renderFindResults() {
+  const c = FIND.counts, res = $("#tk-results");
+  const summary = `<div class="card"><div class="stat-grid" style="margin:0 0 10px">
+      <div class="stat"><div class="k">Checked</div><div class="v">${fmtN(c.in_scope)}</div></div>
+      <div class="stat"><div class="k">Already there</div><div class="v">${fmtN(c.uploaded)}</div></div>
+      <div class="stat"><div class="k">Possibly there</div><div class="v">${fmtN(c.possibly)}</div></div>
+      <div class="stat"><div class="k">Not found</div><div class="v">${fmtN(c.missing)}</div></div></div>
+    <div class="toolrow"><button class="ghost" id="fd-folder">${FIND.folder ? "Only: " + esc(FIND.folder) : "All folders"} ▾</button>${FIND.folder ? `<button class="ghost" id="fd-folder-x">✕</button>` : ""}
+      <label class="inline"><input type="checkbox" id="fd-possible" ${FIND.possible ? "checked" : ""}> Include “possibly there”</label></div>
+    <p class="hint" style="margin-top:0">“Already there” means Google has a photo with the same name taken at about the same time (or Photo Manager uploaded it). “Possibly there” means only the time matches — often a different file, sometimes a burst.</p></div>`;
+  if (!FIND.total) { res.innerHTML = summary + `<div class="empty">Nothing to upload — everything checked is already in Google Photos.</div>`; wireFindTop(); return; }
+  const rows = FIND.folders.map((f) => `<label class="frow2"><input type="checkbox" data-dir="${esc(f.path)}" ${FIND.selFolders.has(f.path) ? "checked" : ""}><span>${f.path ? esc(f.path) : "<i>photo folder itself</i>"}</span><span class="sm">${fmtN(f.count)}</span></label>`).join("");
+  res.innerHTML = summary + `<div class="card"><div class="row between"><h3 style="margin:0">Folders with photos to upload</h3><span><button class="ghost" id="fd-all">Select all</button> <button class="ghost" id="fd-none">Clear</button></span></div>
+      <div class="frows">${rows}</div>${FIND.foldersTotal > FIND.folders.length ? `<p class="hint">Showing the ${FIND.folders.length} biggest of ${fmtN(FIND.foldersTotal)} folders.</p>` : ""}</div>
+    <div class="grid" id="fd-grid">${FIND.items.map((it, i) => cellHtml({ ...it, uploaded: false }, i, isSel(it.rel) ? "sel" : "").replace('<span class="badges">', `<input type="checkbox" class="pick" ${isSel(it.rel) ? "checked" : ""} aria-label="Select"><span class="badges">${it.match === "possibly" ? `<span class="badge warn">Possibly there</span>` : ""}${it.developed ? "" : `<span class="badge">Not developed</span>`}`).replace('<span class="badge ok">Developed</span>', "")).join("")}</div>
+    ${FIND.items.length < FIND.total ? `<div class="row end"><button class="ghost" id="fd-more">Show more (${fmtN(FIND.total - FIND.items.length)} more)</button></div>` : ""}
+    <div class="selbar" id="fd-bar"></div>`;
+  wireFindTop(); loadImgs(res);
+  res.querySelectorAll("[data-dir]").forEach((cb) => cb.addEventListener("change", () => { cb.checked ? FIND.selFolders.add(cb.dataset.dir) : FIND.selFolders.delete(cb.dataset.dir); syncSel(); }));
+  res.querySelectorAll("#fd-grid .cell").forEach((cell) => {
+    const it = FIND.items[Number(cell.dataset.i)], pick = cell.querySelector(".pick");
+    pick.addEventListener("click", (e) => e.stopPropagation());
+    pick.addEventListener("change", () => {
+      if (FIND.selFolders.has(dirOf(it.rel))) { pick.checked = true; toast("This folder is selected as a whole — untick the folder above to choose single photos"); return; }
+      pick.checked ? FIND.selRels.add(it.rel) : FIND.selRels.delete(it.rel); syncSel();
+    });
+    cell.addEventListener("click", () => openViewer(FIND.items.map((x) => ({ ...x, uploaded: false })), Number(cell.dataset.i)));
+  });
+  $("#fd-all").addEventListener("click", () => {
+    if (FIND.foldersTotal > FIND.folders.length) { FIND.items.forEach((it) => FIND.selRels.add(it.rel)); toast("Only the photos shown are selected — there are too many folders to select them all at once"); }
+    else FIND.folders.forEach((f) => FIND.selFolders.add(f.path));
+    syncSel(true);
+  });
+  $("#fd-none").addEventListener("click", () => { FIND.selFolders.clear(); FIND.selRels.clear(); syncSel(true); });
+  const more = $("#fd-more"); more && more.addEventListener("click", () => loadFind(true));
+  syncSel();
+}
+function wireFindTop() {
+  $("#fd-folder").addEventListener("click", async () => { const r = await pickInPhotoFolder("Check only this folder", FIND.folder); if (r !== null) { FIND.folder = r; loadFind(); } });
+  const x = $("#fd-folder-x"); x && x.addEventListener("click", () => { FIND.folder = ""; loadFind(); });
+  $("#fd-possible").addEventListener("change", (e) => { FIND.possible = e.target.checked; loadFind(); });
+}
+function syncSel(full = false) {
+  const res = $("#tk-results");
+  if (full) res.querySelectorAll("[data-dir]").forEach((cb) => { cb.checked = FIND.selFolders.has(cb.dataset.dir); });
+  res.querySelectorAll("#fd-grid .cell").forEach((cell) => {
+    const rel = cell.dataset.rel, on = isSel(rel);
+    cell.classList.toggle("sel", on); cell.querySelector(".pick").checked = on;
+  });
+  const n = selCount(), bar = $("#fd-bar"); if (!bar) return;
+  const undeveloped = FIND.items.filter((it) => isSel(it.rel) && !it.developed).length;
+  bar.innerHTML = `<span><b>${fmtN(n)}</b> selected${undeveloped ? ` · <span class="sm">some will be developed first</span>` : ""}</span>
+    <button class="primary" id="fd-go" ${n && TK.google_connected && !TK.job.running ? "" : "disabled"}>Upload to Google Photos</button>
+    ${!TK.google_connected ? `<span class="sm" style="width:100%">Connect Google Photos on the Upload tab first.</span>` : ""}`;
+  const go = $("#fd-go");
+  go && go.addEventListener("click", async () => {
+    go.disabled = true;
+    try {
+      await api("takeout/upload", { method: "POST", body: { rels: [...FIND.selRels], folders: [...FIND.selFolders], possible: FIND.possible } });
+      toast("Started — developing (if needed) and uploading"); FIND.needsLoad = true; wasTkBusy = true;
+    } catch (e) { toast(e.message); }
+    await loadStatus(); loadTakeoutState();
+  });
+}
+
 // ---- start ------------------------------------------------------------------------
 (function init() {
   let tab = "library";
   try { tab = localStorage.getItem("pm-tab") || "library"; } catch { /* ignore */ }
-  if (!["library", "develop", "quarantine", "google", "storage"].includes(tab)) tab = "library";
+  if (!["library", "gallery", "develop", "quarantine", "google", "storage"].includes(tab)) tab = "library";
   showTab(tab);
   loadStatus();
   if (tab !== "library") loadReport();

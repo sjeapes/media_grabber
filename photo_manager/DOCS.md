@@ -54,7 +54,7 @@ in full; every other file is just looked at briefly.
 How it behaves:
 
 - darktable runs on a private copy of each RAW file, so it can't write into
-  your photo folder. Settings are automatic; custom styles can come later.
+  your photo folder. Look and quality are set under **Look and quality** (below).
 - A JPEG is checked, then saved under a temporary name and renamed. If a file
   with that name already exists, it is left alone and the photo is skipped.
 - Identical duplicate RAWs are developed once.
@@ -63,6 +63,32 @@ How it behaves:
 - It stops when the overnight window ends (resumes next night), when you turn
   it off or press Stop, or when the NAS has less than `develop_min_free_gb` free.
 - Capture time and camera are kept in the JPEG.
+
+### Look and quality (darktable settings)
+
+On the Develop tab, **Look and quality** sets how darktable treats photos
+developed from now on. Existing JPEGs are never replaced, so changing a setting
+doesn't touch earlier results.
+
+- **Look**: *Standard* (scene-referred, filmic), *Sigmoid*, *Classic*
+  (display-referred, closest to a camera JPEG) or *Minimal* (nothing automatic).
+- **JPEG quality** (50–100, blank = the add-on option `jpeg_quality`), **longest
+  side** (full size, or a limit from 400 px up), **colour space** (sRGB,
+  Adobe RGB, Display P3), **rendering intent** and **high-quality resampling**.
+- **XMP template** (optional): export a `.xmp` from the darktable desktop app
+  and put it in this add-on's config folder (`/addon_configs/<id>_photo_manager`);
+  it appears in the list and is applied to every photo.
+- **Try it on one photo**: pick a photo and press the button to develop a
+  small preview with the settings on screen (even unsaved ones) and see it beside
+  the camera's own picture. Previews never touch your NAS.
+
+## Gallery (Gallery tab)
+
+Browse every photo in the library as thumbnails. Filters: **All**, **Recently
+developed** (newest first, choose how many days), **Developed** and **Not
+developed**; plus folder and file-name search. Tap a photo to open it larger,
+flip between the developed JPEG and the camera's preview, and step through with
+the arrows (or keyboard).
 
 ## Quarantine (Quarantine tab)
 
@@ -107,8 +133,28 @@ upload** (off by default) does it by itself after each develop run. Each JPEG is
 sent once; failures are retried up to three times. JPEGs that were already on your
 NAS before Photo Manager got there are never uploaded.
 
-Google only lets apps see photos they uploaded themselves, so Photo Manager can't
-tell whether a photo is already in your library from elsewhere.
+### Find photos not in Google Photos
+
+Google only lets apps see photos they uploaded themselves, so Photo Manager uses a
+**Google Takeout** export to learn what you already have. The *Find photos not in
+Google Photos* page walks you through it:
+
+1. Go to takeout.google.com, deselect all, tick only **Google Photos**
+   (optionally only the years/albums you care about).
+2. Choose *Send download link via email*, *Export once*, **.zip**, 50 GB size.
+3. Download every part when Google emails you, and copy the **.zip files (don't
+   unzip)** into a folder on your NAS.
+4. Choose that folder on the page and press **Scan Takeout**. Only the small
+   `.json` info files are read (name and date taken); photos are never extracted.
+5. Optionally limit the check to one folder, then press the check. Results show
+   **Already there**, **Possibly there** (only the time matches; hidden unless you
+   tick it) and **Not found**, as a thumbnail gallery of folders and photos.
+6. Tick folders and/or photos and press **Upload to Google Photos**. Photos not
+   yet developed are developed first, whatever the scope or skip settings say.
+
+Matching is by file name and capture time, so it is a good guide rather than proof.
+The export is a snapshot: photos added to Google afterwards aren't in it, so
+export again after big changes.
 
 ## Folders
 

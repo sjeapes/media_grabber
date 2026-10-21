@@ -45,6 +45,24 @@ CREATE TABLE IF NOT EXISTS uploaded (
     at         REAL
 );
 
+-- What Google says it already has, read from a Google Takeout export (metadata only)
+CREATE TABLE IF NOT EXISTS takeout_sources (
+    path    TEXT PRIMARY KEY,      -- a .zip or .json file, relative to the Takeout folder
+    size    INTEGER,
+    mtime   REAL,
+    entries INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS takeout (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    source  TEXT NOT NULL,
+    stem    TEXT NOT NULL,         -- normalised file name without extension
+    title   TEXT,
+    ts      INTEGER NOT NULL       -- capture time, seconds since 1970 (as Google records it)
+);
+CREATE INDEX IF NOT EXISTS takeout_ts ON takeout(ts);
+CREATE INDEX IF NOT EXISTS takeout_stem ON takeout(stem);
+CREATE INDEX IF NOT EXISTS takeout_source ON takeout(source);
+
 -- Photos moved to the quarantine folder (never deleted by this add-on)
 CREATE TABLE IF NOT EXISTS quarantined (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -20,12 +20,16 @@ if args[:1] == ["--version"]:
     print("darktable 4.6.1 (test stub)")
     sys.exit(0)
 src, dst = args[0], args[1]
+xmp = None
+if dst.endswith(".xmp") and len(args) > 2:       # darktable-cli SRC [XMP] DST
+    xmp, dst = dst, args[2]
 data = open(src, "rb").read()
 log = os.environ.get("PM_STUB_LOG")
 if log:
     with open(log, "a") as fh:
         fh.write(json.dumps({"args": args, "size": len(data), "src_dir": os.path.dirname(src),
-                             "home": os.environ.get("HOME")}) + "\n")
+                             "home": os.environ.get("HOME"), "xmp": xmp,
+                             "xmp_text": open(xmp).read() if xmp else None, "dst": dst}) + "\n")
 if b"SLOW" in data:
     time.sleep(60)
 if b"FAILME" in data:

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.0
+
+- **Find photos not in Google Photos**: a guided Google Takeout flow. Scan the
+  Takeout .zip files (or extracted folders) once, then check all photos or one
+  folder, see what is missing in a thumbnail gallery, tick folders and photos
+  and upload them (developing them first when needed).
+- **Gallery tab**: browse all photos, or filter to recently developed, developed
+  or not developed; folder and name search; full-size viewer that flips between
+  the developed JPEG and the camera preview.
+- **darktable settings** on the Develop tab: look presets (filmic, sigmoid,
+  classic, minimal), JPEG quality, maximum size, colour space, rendering intent,
+  high-quality resampling and an optional XMP template, plus **Try it on one
+  photo** to compare a preview with the camera's picture. Applies to future
+  photos only; existing JPEGs are never replaced.
+
 ## 0.3.0
 
 - **Thumbnails** in the Quarantine tab: the copy that stays is shown larger, and

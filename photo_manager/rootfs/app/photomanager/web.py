@@ -9,11 +9,15 @@ from pathlib import Path
 from flask import Flask, Response, abort, jsonify, request, send_from_directory
 
 from .gphotos import GoogleError, GooglePhotos
+from .gallery import Gallery
+from .selection import Selection, SelectionError
+from .takeout import Takeout
 from .ha import HAClient
 from .processor import DevelopError, Processor
 from .quarantine import Quarantine, QuarantineError
 from .scanner import Scanner
 from .storage import FolderError, Storage
+from . import thumbs as thumbs_mod
 from .thumbs import Thumbs
 from .uploader import UploadError, Uploader
 
@@ -29,8 +33,11 @@ class Services:
         self.processor = Processor(cfg, self.storage, self.scanner, on_done=self.on_develop_done)
         self.quarantine = Quarantine(cfg, self.storage)
         self.thumbs = Thumbs(cfg, self.storage)
+        self.gallery = Gallery(cfg)
+        self.takeout = Takeout(cfg)
         self.google = GooglePhotos(cfg)
         self.uploader = Uploader(cfg, self.storage, self.google, on_done=self.publish)
+        self.selection = Selection(cfg, self.processor, self.uploader, self.google)
         self.ha = HAClient(cfg)
 
     def publish(self):
@@ -128,6 +135,8 @@ def create_app(svc: Services) -> Flask:
                                    "total": svc.uploader.state["total"],
                                    "enabled": svc.storage.settings["google_upload"],
                                    "connected": svc.google.connected},
+                        "takeout": {"scanning": svc.takeout.state["running"],
+                                    "job": svc.selection.state["running"]},
                         "ha_connected": svc.ha.enabled})
 
     # --- NAS and folders -------------------------------------------------------
@@ -204,17 +213,60 @@ def create_app(svc: Services) -> Flask:
 
     @app.get("/api/thumb")
     def thumb():
+        size = thumbs_mod.SIZE_LARGE if request.args.get("size") == "l" else thumbs_mod.SIZE
         try:
             if request.args.get("q"):
-                data = svc.thumbs.quarantined(int(request.args["q"]))
+                data = svc.thumbs.quarantined(int(request.args["q"]), size)
+            elif request.args.get("dev"):                      # the developed JPEG of a photo
+                data = svc.thumbs.developed(request.args["dev"], size)
             else:
-                data = svc.thumbs.library(request.args.get("rel", ""))
+                data = svc.thumbs.library(request.args.get("rel", ""), size)
         except (TypeError, ValueError):
             data = None
         if not data:
             abort(404)
         return Response(data, mimetype="image/jpeg",
                         headers={"Cache-Control": "private, max-age=86400"})
+
+    @app.get("/api/gallery")
+    def gallery_list():
+        a = request.args
+        try:
+            res = svc.gallery.list(a.get("filter", "all"), a.get("folder", ""), a.get("q", ""),
+                                   a.get("days", 7, type=int), a.get("offset", 0, type=int),
+                                   a.get("limit", 60, type=int))
+        except (TypeError, ValueError):
+            return bad("Invalid request")
+        res["counts"] = svc.gallery.counts(a.get("days", 7, type=int))
+        return jsonify(res)
+
+    @app.post("/api/develop/dt")
+    def develop_dt():
+        try:
+            svc.storage.set_dt(body())
+        except FolderError as exc:
+            return bad(str(exc))
+        return jsonify(svc.processor.summary())
+
+    @app.post("/api/develop/preview")
+    def develop_preview():
+        b = body()
+        try:
+            svc.processor.start_preview(str(b.get("rel") or ""), b.get("dt") or {})
+        except DevelopError as exc:
+            return bad(str(exc), 409 if "already" in str(exc) or "running" in str(exc) else 400)
+        return jsonify(svc.processor.preview_state)
+
+    @app.get("/api/develop/preview")
+    def develop_preview_state():
+        return jsonify(svc.processor.preview_state)
+
+    @app.get("/api/develop/preview.jpg")
+    def develop_preview_image():
+        path = svc.processor.preview_path
+        if svc.processor.preview_state.get("error") or not path.is_file():
+            abort(404)
+        return Response(path.read_bytes(), mimetype="image/jpeg", headers={"Cache-Control": "no-store"})
 
     @app.post("/api/develop/run")
     def develop_run():
@@ -286,6 +338,69 @@ def create_app(svc: Services) -> Flask:
     @app.post("/api/quarantine/forget-missing")
     def quarantine_forget():
         return jsonify({"forgotten": svc.quarantine.forget_missing()})
+
+    # --- Google Takeout: what is missing from Google Photos --------------------------------------
+    def takeout_root():
+        rel = svc.storage.settings["takeout_folder"]
+        if not rel:
+            return None
+        try:
+            p = svc.storage.abs_path(rel)
+        except FolderError:
+            return None
+        return p if p.is_dir() else None
+
+    @app.get("/api/takeout")
+    def takeout_get():
+        return jsonify({"folder": svc.storage.settings["takeout_folder"], "folder_ok": takeout_root() is not None,
+                        "state": dict(svc.takeout.state), "counts": svc.takeout.counts(),
+                        "job": dict(svc.selection.state), "google_connected": svc.google.connected,
+                        "photo_folder": svc.storage.settings["photo_folder"]})
+
+    @app.post("/api/takeout/folder")
+    def takeout_folder():
+        try:
+            svc.storage.set_takeout_folder(body().get("folder"))
+        except FolderError as exc:
+            return bad(str(exc))
+        return takeout_get()
+
+    @app.post("/api/takeout/scan")
+    def takeout_scan():
+        try:
+            if not svc.takeout.start(takeout_root()):
+                return bad("A Takeout scan is already running", 409)
+        except ValueError as exc:
+            return bad(str(exc))
+        return jsonify(dict(svc.takeout.state))
+
+    @app.post("/api/takeout/cancel")
+    def takeout_cancel():
+        svc.takeout.cancel()
+        return jsonify({"ok": True})
+
+    @app.get("/api/takeout/missing")
+    def takeout_missing():
+        a = request.args
+        if not svc.takeout.counts()["entries"]:
+            return bad("Scan your Takeout export first")
+        return jsonify(svc.takeout.report(a.get("folder", ""), a.get("possible") == "1",
+                                          a.get("offset", 0, type=int), a.get("limit", 60, type=int)))
+
+    @app.post("/api/takeout/upload")
+    def takeout_upload():
+        b = body()
+        rels = svc.takeout.resolve(b.get("rels"), b.get("folders"), b.get("possible") is True)
+        try:
+            res = svc.selection.start(rels)
+        except SelectionError as exc:
+            return bad(str(exc), 409 if "already" in str(exc) else 400)
+        return jsonify(res)
+
+    @app.post("/api/takeout/upload/cancel")
+    def takeout_upload_cancel():
+        svc.selection.cancel()
+        return jsonify({"ok": True})
 
     # --- Google Photos ---------------------------------------------------------------------
     @app.get("/api/google")

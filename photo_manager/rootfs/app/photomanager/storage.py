@@ -27,6 +27,8 @@ import os
 import threading
 from pathlib import Path, PurePosixPath
 
+from . import dtsettings
+
 NETWORK_FS = {"cifs", "smb3", "smbfs", "nfs", "nfs4", "fuse.sshfs", "9p"}
 GB = 1024 ** 3
 # Folders NAS firmware creates that never hold real photos
@@ -41,7 +43,9 @@ DEFAULT_SETTINGS = {"photo_folder": None,
                     "output_mode": "separate",
                     "develop_scope": "",          # sub-folder of the photo folder ("" = all of it)
                     "skip_with_jpeg": False,       # leave RAWs that already have a camera JPEG
-                    "google_upload": False}        # automatically upload developed JPEGs to Google Photos
+                    "google_upload": False,        # automatically upload developed JPEGs to Google Photos
+                    "takeout_folder": None,        # where the Google Takeout export was put
+                    "dt": {}}                      # darktable options (see dtsettings.py)
 DEVELOPED_SUFFIX = "_developed"
 _pool = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="fs")
 
@@ -140,6 +144,9 @@ class Storage:
                 s["output_mode"] = "separate"
             s["skip_with_jpeg"] = s["skip_with_jpeg"] is True
             s["google_upload"] = s["google_upload"] is True
+            s["dt"] = dtsettings.load(s["dt"])
+            if not isinstance(s["takeout_folder"], str):
+                s["takeout_folder"] = None
             try:
                 s["develop_scope"] = clean_rel(s["develop_scope"]) if isinstance(
                     s["develop_scope"], str) else ""
@@ -147,6 +154,7 @@ class Storage:
                 s["develop_scope"] = ""
         except (OSError, ValueError):
             pass
+        s["dt"] = dtsettings.load(s.get("dt"))       # complete, even when nothing was saved yet
         return s
 
     # --- NAS selection -----------------------------------------------------------
@@ -289,6 +297,27 @@ class Storage:
         self._check_overlaps(new)
         self._save_settings(new)
         return self.folders()
+
+    def set_dt(self, changes: dict) -> dict:
+        """Change darktable options (validated). Returns the full set."""
+        try:
+            dt = dtsettings.clean(changes, self.settings["dt"])
+        except dtsettings.DtError as exc:
+            raise FolderError(str(exc)) from None
+        self._save_settings({**self.settings, "dt": dt})
+        return dt
+
+    def set_takeout_folder(self, rel) -> str | None:
+        if rel is None or rel == "":
+            self._save_settings({**self.settings, "takeout_folder": None})
+            return None
+        rel = clean_rel(rel)
+        if not rel:
+            raise FolderError("Choose a folder inside the NAS, not the whole share")
+        if not self.abs_path(rel).is_dir():
+            raise FolderError("That folder doesn't exist on the NAS")
+        self._save_settings({**self.settings, "takeout_folder": rel})
+        return rel
 
     def set_processing(self, enabled=None, output_mode=None, scope=None,
                        skip_with_jpeg=None) -> dict:

@@ -15,12 +15,13 @@ from pathlib import Path
 from .db import db
 
 try:  # Pillow shrinks the preview; without it the embedded preview is sent as it is
-    from PIL import Image
+    from PIL import Image, ImageOps
 except ImportError:  # pragma: no cover
-    Image = None
+    Image = ImageOps = None
 
 MAX_EMBEDDED = 3 * 1024 * 1024   # larger previews than this aren't sent unshrunk
-SIZE = 480
+SIZE = 480                       # small thumbnails
+SIZE_LARGE = 1600                # the enlarged view
 ROTATE = {3: 180, 6: 270, 8: 90}   # TIFF orientation tag -> degrees to rotate (counter-clockwise)
 
 
@@ -85,7 +86,27 @@ def embedded_preview(path) -> tuple[bytes, int] | None:
         return None
 
 
-def make_thumbnail(path) -> bytes | None:
+def _is_jpeg(path) -> bool:
+    try:
+        with open(path, "rb") as f:
+            return f.read(2) == b"\xff\xd8"
+    except OSError:
+        return False
+
+
+def make_thumbnail(path, size: int = SIZE) -> bytes | None:
+    """A JPEG no bigger than size x size: from a JPEG file itself, or from a CR2's built-in preview."""
+    if Image is not None and _is_jpeg(path):          # e.g. a developed JPEG — can be large
+        try:
+            img = Image.open(path)
+            img.draft("RGB", (size * 2, size * 2))
+            img = ImageOps.exif_transpose(img).convert("RGB")
+            img.thumbnail((size, size))
+            out = io.BytesIO()
+            img.save(out, "JPEG", quality=82)
+            return out.getvalue()
+        except Exception:  # noqa: BLE001
+            return None
     found = embedded_preview(path)
     if not found:
         return None
@@ -94,11 +115,11 @@ def make_thumbnail(path) -> bytes | None:
         return data if len(data) <= MAX_EMBEDDED else None
     try:
         img = Image.open(io.BytesIO(data))
-        img.draft("RGB", (SIZE * 2, SIZE * 2))
+        img.draft("RGB", (size * 2, size * 2))
         img = img.convert("RGB")
         if ROTATE.get(orientation):
             img = img.rotate(ROTATE[orientation], expand=True)
-        img.thumbnail((SIZE, SIZE))
+        img.thumbnail((size, size))
         out = io.BytesIO()
         img.save(out, "JPEG", quality=80)
         return out.getvalue()
@@ -114,18 +135,18 @@ class Thumbs:
     def cache_dir(self) -> Path:
         return self.cfg.data_dir / "thumbs"
 
-    def _get(self, path: Path) -> bytes | None:
+    def _get(self, path: Path, size: int = SIZE) -> bytes | None:
         try:
             st = path.stat()
         except OSError:
             return None
-        key = hashlib.sha1(f"{path}|{st.st_size}|{st.st_mtime}".encode()).hexdigest()
+        key = hashlib.sha1(f"{path}|{st.st_size}|{st.st_mtime}|{size}".encode()).hexdigest()
         cached = self.cache_dir / f"{key}.jpg"
         try:
             return cached.read_bytes()
         except OSError:
             pass
-        data = make_thumbnail(path)
+        data = make_thumbnail(path, size)
         if data:
             try:
                 self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -136,7 +157,7 @@ class Thumbs:
                 pass
         return data
 
-    def library(self, rel: str) -> bytes | None:
+    def library(self, rel: str, size: int = SIZE) -> bytes | None:
         """A photo in the library (must be a file the last scan found)."""
         root = self.storage.photo_dir()
         if root is None:
@@ -144,15 +165,27 @@ class Thumbs:
         with db(self.cfg) as conn:
             if not conn.execute("SELECT 1 FROM photos WHERE rel=?", (rel,)).fetchone():
                 return None
-        return self._get(root / rel)
+        return self._get(root / rel, size)
 
-    def quarantined(self, id_: int) -> bytes | None:
+    def developed(self, rel: str, size: int = SIZE) -> bytes | None:
+        """The developed JPEG of a library photo (only ones Photo Manager made)."""
+        with db(self.cfg) as conn:
+            row = conn.execute("SELECT out_rel FROM developed WHERE rel=? AND status='done' "
+                               "AND out_rel IS NOT NULL", (rel,)).fetchone()
+        if not row:
+            return None
+        try:
+            return self._get(self.storage.abs_path(row[0]), size)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def quarantined(self, id_: int, size: int = SIZE) -> bytes | None:
         with db(self.cfg) as conn:
             row = conn.execute("SELECT q_rel FROM quarantined WHERE id=? AND restored_at IS NULL",
                                (id_,)).fetchone()
         if not row:
             return None
         try:
-            return self._get(self.storage.abs_path(row[0]))
+            return self._get(self.storage.abs_path(row[0]), size)
         except Exception:  # noqa: BLE001
             return None

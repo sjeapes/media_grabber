@@ -23,6 +23,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from . import dtsettings
 from .db import db
 from .storage import disk
 
@@ -74,6 +75,8 @@ class Processor:
         self._cancel = False
         self._dt_info = None
         self.state = self._blank_state()
+        self.preview_state: dict = {}
+        self._only = None
         with db(cfg) as conn:
             row = conn.execute("SELECT value FROM meta WHERE key='last_develop'").fetchone()
         if row:
@@ -132,15 +135,19 @@ class Processor:
     def pending(self) -> tuple[list[tuple], int]:
         """(rows to develop, identical copies skipped). Identical copies are developed once."""
         s = self.storage.settings
-        scope = s.get("develop_scope") or ""
+        only = self._only
+        scope = "" if only else (s.get("develop_scope") or "")
+        skip_jpeg = bool(s.get("skip_with_jpeg")) and not only
         with db(self.cfg) as conn:
             rows = conn.execute(
                 "SELECT p.rel, p.size, p.sha256 FROM photos p LEFT JOIN developed d ON d.rel=p.rel "
                 "WHERE (d.rel IS NULL OR (d.status='failed' AND d.attempts < ?)) "
-                + ("AND p.has_jpeg=0 " if s.get("skip_with_jpeg") else "")
+                + ("AND p.has_jpeg=0 " if skip_jpeg else "")
                 + "ORDER BY p.taken DESC, p.rel", (MAX_ATTEMPTS,)).fetchall()
             if scope:
                 rows = [r for r in rows if r[0] == scope or r[0].startswith(scope + "/")]
+            if only:
+                rows = [r for r in rows if r[0] in only]
             done_shas = {r[0] for r in conn.execute(
                 "SELECT p.sha256 FROM developed d JOIN photos p ON p.rel=d.rel "
                 "WHERE d.status='done' AND p.sha256 IS NOT NULL "
@@ -192,8 +199,84 @@ class Processor:
         rel = row[0] if row else "2024/IMG_1234.CR2"
         return {"raw": f"{folder}/{rel}", "jpeg": self.storage.developed_rel(rel)}
 
+    def templates(self) -> list[str]:
+        try:
+            return sorted(f.name for f in self.cfg.template_dir.glob("*.xmp")
+                          if f.is_file() and dtsettings.XMP_NAME.match(f.name))
+        except OSError:
+            return []
+
+    # --- try the settings on one photo, without saving anything -------------------------------
+    def start_preview(self, rel: str, dt_changes: dict | None = None) -> dict:
+        """Develop one photo with the given (unsaved) settings to a small temporary picture."""
+        if self.state["running"]:
+            raise DevelopError("Developing is running — try again when it has finished")
+        dt = self.storage.settings["dt"]
+        try:
+            dt = dtsettings.clean(dt_changes or {}, dt)
+        except dtsettings.DtError as exc:
+            raise DevelopError(str(exc)) from None
+        dtc = self.darktable()
+        if not dtc["available"]:
+            raise DevelopError(dtc["error"])
+        photo_dir = self.storage.photo_dir()
+        if photo_dir is None:
+            raise DevelopError("Choose your photo folder on the Storage tab first")
+        with db(self.cfg) as conn:
+            row = conn.execute("SELECT size FROM photos WHERE rel=?", (rel,)).fetchone()
+        if not row:
+            raise DevelopError("That photo isn't in the library — scan again")
+        with self._lock:
+            if self.preview_state.get("running"):
+                raise DevelopError("A preview is already being made")
+            self.preview_state = {"running": True, "rel": rel, "error": None, "done_at": None,
+                                  "started": time.time(), "settings": dt}
+        threading.Thread(target=self._preview, args=(rel, row[0], dt), daemon=True).start()
+        return dict(self.preview_state)
+
+    @property
+    def preview_path(self) -> Path:
+        return self.cfg.tmp_dir / "preview" / "result.jpg"
+
+    def _preview(self, rel: str, size: int, dt: dict):
+        st = self.preview_state
+        area = self.cfg.tmp_dir / "preview"
+        work = area / "work"
+        try:
+            shutil.rmtree(work, ignore_errors=True)
+            work.mkdir(parents=True)
+            for d in ("home", "darktable-config", "darktable-cache"):
+                (area / d).mkdir(parents=True, exist_ok=True)
+            src = self.storage.photo_dir() / rel
+            if src.stat().st_size != size:
+                raise DevelopError("The file changed since the last scan — scan again")
+            local_in = work / ("input" + src.suffix.lower())
+            shutil.copyfile(src, local_in)
+            tpl = self._template(dt)
+            xmp = None
+            if tpl is not None:
+                xmp = work / "template.xmp"
+                shutil.copyfile(tpl, xmp)
+            local_out = work / "output.jpg"
+            cmd = self._command(local_in, local_out, dt, area="preview", max_dim=1400, xmp=xmp)
+            env = {**os.environ, "HOME": str(area / "home")}
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                  env=env, timeout=self.cfg.dt_timeout)
+            if proc.returncode != 0 or not local_out.exists() or not valid_jpeg(local_out):
+                tail = " ".join((proc.stdout or "").strip().splitlines()[-2:])[-200:]
+                raise DevelopError("darktable couldn't develop this photo" + (f": {tail}" if tail else ""))
+            os.replace(local_out, self.preview_path)
+        except subprocess.TimeoutExpired:
+            st["error"] = "darktable took too long on this photo"
+        except DevelopError as exc:
+            st["error"] = str(exc)
+        except Exception as exc:  # noqa: BLE001
+            st["error"] = f"{type(exc).__name__}: {exc}"[:200]
+        shutil.rmtree(work, ignore_errors=True)
+        st.update(running=False, done_at=time.time())
+
     # --- control ----------------------------------------------------------------------
-    def start(self, trigger: str, window: str | None = None) -> dict:
+    def start(self, trigger: str, window: str | None = None, only=None) -> dict:
         """Start a run in the background. Raises DevelopError if it can't start."""
         if trigger == "schedule" and not self.storage.settings["processing_enabled"]:
             raise DevelopError("Automatic developing is turned off")     # manual runs don't need it
@@ -207,6 +290,7 @@ class Processor:
             if self.state["running"]:
                 raise DevelopError("Developing is already running")
             self._cancel = False
+            self._only = set(only) if only else None      # an explicit list: scope/skip settings don't apply
             self.state = {**self._blank_state(), "running": True, "trigger": trigger,
                           "phase": "scanning", "started": time.time()}
         threading.Thread(target=self._run, args=(trigger, window), daemon=True).start()
@@ -279,6 +363,7 @@ class Processor:
         self._set_meta("last_develop", json.dumps({**st, "running": False}))
         shutil.rmtree(self.cfg.tmp_dir / "work", ignore_errors=True)
         st["running"] = False
+        self._only = None
         log.info("Develop run (%s): %d developed, %d failed%s", trigger, st["done"], st["failed"],
                  f", {st['stop_text']}" if st["stop_reason"] else "")
         self.on_done()
@@ -333,12 +418,35 @@ class Processor:
                 "error=excluded.error",
                 (rel, status, sha, size, out_rel, out_size, time.time(), error))
 
-    def _command(self, local_in: Path, local_out: Path) -> list[str]:
-        tmp = self.cfg.tmp_dir
-        cmd = [self.cfg.darktable, str(local_in), str(local_out), "--core",
+    def _template(self, dt: dict) -> Path | None:
+        """The XMP template chosen in the settings (a file in the add-on's config folder)."""
+        name = dt.get("xmp_template")
+        if not name:
+            return None
+        path = self.cfg.template_dir / name
+        if not path.is_file():
+            raise DevelopError(f"The XMP template “{name}” isn't in the add-on's config folder")
+        return path
+
+    def _command(self, local_in: Path, local_out: Path, dt: dict | None = None,
+                 area: str = "", max_dim: int | None = None, xmp: Path | None = None) -> list[str]:
+        """The darktable-cli command line for the current settings.
+
+        area: a sub-folder name so the preview uses its own darktable config and cache."""
+        dt = dt or self.storage.settings["dt"]
+        tmp = self.cfg.tmp_dir / area if area else self.cfg.tmp_dir
+        quality = dt.get("quality") or int(self.cfg.opt("jpeg_quality"))
+        size = max_dim if max_dim is not None else int(dt.get("max_size") or 0)
+        wf = dtsettings.PRESETS[dt["preset"]]["workflow"]
+        cmd = [self.cfg.darktable, str(local_in)] + ([str(xmp)] if xmp else []) + [str(local_out),
+               "--hq", "true" if dt.get("hq", True) else "false",
+               "--width", str(size), "--height", str(size),
+               "--icc-type", dt["colour"], "--icc-intent", dt["intent"],
+               "--core",
                "--library", ":memory:", "--configdir", str(tmp / "darktable-config"),
                "--cachedir", str(tmp / "darktable-cache"), "--disable-opencl",
-               "--conf", f"plugins/imageio/format/jpeg/quality={int(self.cfg.opt('jpeg_quality'))}",
+               "--conf", f"plugins/darkroom/workflow={wf}",
+               "--conf", f"plugins/imageio/format/jpeg/quality={quality}",
                "--conf", "write_sidecar_files=never"]
         nice = shutil.which("nice")
         return [nice, "-n", "19", *cmd] if nice else cmd
@@ -393,7 +501,13 @@ class Processor:
                 raise DevelopError(f"Can't copy the RAW file: {exc.strerror or exc}") from None
             if local_in.stat().st_size != size:
                 raise DevelopError("The RAW file wasn't copied completely")
-            rc, output = self._run_darktable(self._command(local_in, local_out))
+            dt = dict(self.storage.settings["dt"])
+            tpl = self._template(dt)
+            xmp = None
+            if tpl is not None:                       # a private copy: the original is never touched
+                xmp = work / "template.xmp"
+                shutil.copyfile(tpl, xmp)
+            rc, output = self._run_darktable(self._command(local_in, local_out, dt, xmp=xmp))
             if rc != 0 or not local_out.exists():
                 tail = " ".join(output.strip().splitlines()[-3:])[-300:]
                 raise DevelopError(f"darktable couldn't develop this file"
@@ -433,6 +547,8 @@ class Processor:
         s = self.storage.settings
         return {"enabled": s["processing_enabled"], "output_mode": s["output_mode"],
                 "scope": s["develop_scope"], "skip_with_jpeg": s["skip_with_jpeg"],
+                "dt": s["dt"], "dt_options": dtsettings.describe(), "templates": self.templates(),
+                "preview": dict(self.preview_state),
                 "window": {"start": start, "end": end, "now_inside": self.in_window()},
                 "state": dict(self.state), "counts": self.counts(), "darktable": self.darktable(),
                 "jpeg_quality": int(self.cfg.opt("jpeg_quality")), "example": self.example(),

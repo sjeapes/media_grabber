@@ -36,6 +36,7 @@ class Uploader:
         self.cfg, self.storage, self.google, self.on_done = cfg, storage, google, on_done
         self._lock = threading.Lock()
         self._cancel = False
+        self._only = None
         self.state = self._blank()
         self.state["finished"] = None
         try:
@@ -60,13 +61,15 @@ class Uploader:
     def pending(self) -> list[tuple]:
         """Developed JPEGs not yet in Google Photos. JPEGs that were already on the NAS before
         we got there (not made by us) are never uploaded."""
+        only = self._only
         with db(self.cfg) as conn:
-            return conn.execute(
+            rows = conn.execute(
                 "SELECT d.rel, d.out_rel, d.out_size FROM developed d "
                 "LEFT JOIN uploaded u ON u.out_rel=d.out_rel "
                 "WHERE d.status='done' AND d.error IS NULL AND d.out_rel IS NOT NULL "
                 "AND (u.out_rel IS NULL OR (u.status='failed' AND u.attempts < ?)) "
                 "ORDER BY d.at, d.rel", (MAX_ATTEMPTS,)).fetchall()
+        return [r for r in rows if r[0] in only] if only else rows
 
     def counts(self) -> dict:
         with db(self.cfg) as conn:
@@ -91,7 +94,7 @@ class Uploader:
                 "failed": self.failures(), **self.google.status()}
 
     # --- control -------------------------------------------------------------------------------
-    def start(self, trigger: str) -> dict:
+    def start(self, trigger: str, only=None) -> dict:
         if trigger != "manual" and not self.enabled:      # "Upload now" works with the switch off
             raise UploadError("Automatic upload to Google Photos is turned off")
         if not self.google.connected:
@@ -100,6 +103,7 @@ class Uploader:
             if self.state["running"]:
                 raise UploadError("Uploading is already running")
             self._cancel = False
+            self._only = set(only) if only else None
             self.state = {**self._blank(), "running": True, "trigger": trigger, "started": time.time()}
         threading.Thread(target=self._run, args=(trigger,), daemon=True).start()
         return dict(self.state)
@@ -153,6 +157,7 @@ class Uploader:
         except Exception:  # noqa: BLE001
             log.exception("could not save last upload")
         st["running"] = False
+        self._only = None
         log.info("Google Photos upload (%s): %d uploaded, %d failed%s", trigger, st["done"], st["failed"],
                  f", {st['stop_text']}" if st["stop_reason"] else "")
         self.on_done()

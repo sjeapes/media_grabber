@@ -19,6 +19,7 @@
 
 <nav class="tabs" role="tablist">
   <button data-tab="library" class="on">Library</button>
+  <button data-tab="gallery">Gallery</button>
   <button data-tab="develop">Develop</button>
   <button data-tab="quarantine">Quarantine</button>
   <button data-tab="google">Google Photos</button>
@@ -35,7 +36,14 @@
   </section>
 
   <!-- Develop -->
-  <section id="tab-develop" class="tab"><div id="develop"><div class="empty"><span class="spinner"></span></div></div></section>
+  <section id="tab-develop" class="tab"><div id="develop"><div class="empty"><span class="spinner"></span></div></div><div id="develop-settings"></div></section>
+
+  <!-- Gallery -->
+  <section id="tab-gallery" class="tab">
+    <div id="gal-bar"></div>
+    <div id="gal-grid" class="grid"></div>
+    <div id="gal-more" class="row end"></div>
+  </section>
 
   <!-- Quarantine -->
   <section id="tab-quarantine" class="tab">
@@ -71,6 +79,15 @@
   </div>
 </div>
 
+<div id="viewer" class="overlay viewer" hidden>
+  <div class="vbar"><span id="viewer-title"></span><button id="viewer-x" class="ghost" aria-label="Close">✕</button></div>
+  <div class="vstage"><button id="viewer-prev" class="vnav" aria-label="Previous">‹</button><img id="viewer-img" alt=""><button id="viewer-next" class="vnav" aria-label="Next">›</button></div>
+  <div class="vbar"><button id="viewer-mode" class="ghost"></button><span id="viewer-info" class="sm"></span></div>
+</div>
+<div id="photopicker" class="overlay" hidden>
+  <div class="sheet" role="dialog" aria-modal="true"><div class="sheet-head"><h2>Choose a photo to try</h2><button id="pp-x" class="ghost" aria-label="Close">✕</button></div>
+  <div id="pp-grid" class="grid small"></div></div>
+</div>
 <div id="lightbox" class="overlay" hidden><img id="lightbox-img" alt=""></div>
 <div id="toast" class="toast" hidden></div>
 <script src="static/app.js"></script>

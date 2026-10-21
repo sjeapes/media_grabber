@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Photo Manager</title>
+<link rel="stylesheet" href="static/app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="logo" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l1.5-2h7L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>
+    </span>
+    <div><h1>Photo Manager</h1><p class="sub">CR2 photos on your NAS</p></div>
+  </div>
+  <div class="pills" id="pills"></div>
+</header>
+
+<nav class="tabs" role="tablist">
+  <button data-tab="library" class="on">Library</button>
+  <button data-tab="storage">Storage</button>
+</nav>
+
+<main>
+  <div id="banner" class="banner" hidden></div>
+
+  <!-- Library -->
+  <section id="tab-library" class="tab on">
+    <div class="card" id="scan-card"></div>
+    <div id="report"></div>
+  </section>
+
+  <!-- Storage -->
+  <section id="tab-storage" class="tab">
+    <div class="toolbar"><h2>NAS</h2><button id="nas-rescan" class="ghost">Re-scan</button></div>
+    <div id="nas"></div>
+    <div class="toolbar"><h2>Folders</h2></div>
+    <div id="folders"></div>
+  </section>
+</main>
+
+<div id="picker" class="overlay" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="picker-title">
+    <div class="sheet-head"><h2 id="picker-title">Choose a folder</h2><button id="picker-x" class="ghost" aria-label="Close">✕</button></div>
+    <nav id="crumbs" class="crumbs"></nav>
+    <div id="picker-list" class="picker-list"></div>
+    <div id="picker-info" class="note"></div>
+    <div id="picker-new" class="row newname" hidden>
+      <input id="picker-newname" placeholder="Or type a new folder name to use here" autocomplete="off" maxlength="80">
+    </div>
+    <div class="row end"><button id="picker-cancel" class="ghost">Cancel</button><button id="picker-ok" class="primary">Use this folder</button></div>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+<script src="static/app.js"></script>
+</body>
+</html>

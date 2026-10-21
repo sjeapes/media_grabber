@@ -5,11 +5,16 @@
 | App | Description |
 | --- | --- |
 | [Media Grabber](media_grabber/DOCS.md) | BBC iPlayer (get_iplayer) + YouTube (yt-dlp) downloader to a NAS, with NAS health and a split-tunnel UK VPN |
+| [Photo Manager](photo_manager/DOCS.md) | Finds the CR2 photos on your NAS and reports what you have, including exact duplicates (read-only for now; developing, review and Google Photos upload to follow) |
 
 ## Development
 
 ```sh
 cd media_grabber
 pip install flask waitress pytest
+python -m pytest -q tests
+
+cd ../photo_manager
+pip install flask waitress exifread pytest
 python -m pytest -q tests
 ```

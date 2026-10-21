@@ -1,0 +1,24 @@
+name: Photo Manager
+version: "0.1.0"
+slug: photo_manager
+description: Finds the Canon CR2 photos on your NAS, reports what you have (including exact duplicates) and, in later versions, develops them overnight, helps you pick the keepers and uploads them to Google Photos.
+url: https://github.com/sjeapes/media_grabber/tree/main/photo_manager
+arch:
+  - amd64
+  - aarch64
+startup: application
+boot: auto
+init: false
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:image-multiple
+panel_title: Photo Manager
+homeassistant_api: true
+map:
+  - media:rw
+  - share:rw
+  - addon_config:rw
+options:
+  low_space_gb: 20
+schema:
+  low_space_gb: int(1,100000)

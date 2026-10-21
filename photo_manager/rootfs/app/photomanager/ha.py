@@ -35,7 +35,7 @@ class HAClient:
     def event(self, event_type: str, data: dict):
         self._post(f"/events/{event_type}", data)
 
-    def publish(self, nas: dict, report: dict):
+    def publish(self, nas: dict, report: dict, develop: dict, quarantine: dict):
         disk = nas.get("disk") or {}
         self.state("binary_sensor.photo_manager_storage_problem",
                    "off" if nas["healthy"] else "on",
@@ -44,17 +44,34 @@ class HAClient:
                    location=nas.get("name"), path=nas.get("path"),
                    needs_choice=nas.get("needs_choice"),
                    network_storage_found=nas.get("candidate_count"), icon="mdi:nas")
-        sc = report["state"]
+        sc, dv = report["state"], develop["state"]
         if sc.get("running"):
             status = sc.get("phase") or "scanning"
+        elif dv.get("running"):
+            status = "developing"
         else:
             status = "idle"
         self.state("sensor.photo_manager_status", status,
                    friendly_name=f"{DEVICE} status", icon="mdi:image-search",
-                   files_seen=sc.get("files"), current=sc.get("current"),
+                   files_seen=sc.get("files"), current=dv.get("current") or sc.get("current"),
                    hashed=sc.get("hashed"), to_hash=sc.get("to_hash"),
                    last_scan=sc.get("finished"), scan_error=sc.get("error"),
-                   cancelled=sc.get("cancelled"))
+                   cancelled=sc.get("cancelled"), developing_enabled=develop["enabled"],
+                   develop_done=dv.get("done"), develop_total=dv.get("total"))
+        c = develop["counts"]
+        self.state("sensor.photo_manager_developed", c["developed"],
+                   friendly_name=f"{DEVICE} developed", unit_of_measurement="photos",
+                   icon="mdi:image-auto-adjust", enabled=develop["enabled"],
+                   output_mode=develop["output_mode"], to_develop=c["pending"],
+                   failed=c["failed"], last_run=dv.get("finished"),
+                   last_run_trigger=dv.get("trigger"), last_run_developed=dv.get("done"),
+                   last_run_failed=dv.get("failed"), last_run_stopped=dv.get("stop_text"),
+                   darktable=develop["darktable"].get("version"),
+                   window=f"{develop['window']['start']:02d}:00–{develop['window']['end']:02d}:00")
+        self.state("sensor.photo_manager_quarantine", quarantine["files"],
+                   friendly_name=f"{DEVICE} quarantine", unit_of_measurement="photos",
+                   icon="mdi:archive-arrow-down", folder=quarantine["folder"],
+                   size_gb=round(quarantine["bytes"] / 1024 ** 3, 2))
         total = report.get("total_files")
         if total is None:
             return

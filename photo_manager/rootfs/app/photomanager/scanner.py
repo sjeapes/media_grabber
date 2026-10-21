@@ -18,36 +18,18 @@ import sqlite3
 import threading
 import time
 from collections import Counter
-from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
 import exifread
 
+from .db import db, init
 from .storage import is_skipped
 
 log = logging.getLogger("photomanager.scan")
 GB = 1024 ** 3
 HASH_CHUNK = 4 * 1024 * 1024
 BATCH = 200
-
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS photos (
-    rel        TEXT PRIMARY KEY,   -- path relative to the photo folder, '/' separated
-    size       INTEGER NOT NULL,
-    mtime      REAL NOT NULL,
-    taken      TEXT,               -- 'YYYY-MM-DD HH:MM:SS' (EXIF capture time, else file time)
-    taken_src  TEXT,               -- 'exif' or 'file'
-    camera     TEXT,
-    has_jpeg   INTEGER NOT NULL DEFAULT 0,
-    sha256     TEXT,
-    exif_error TEXT
-);
-CREATE INDEX IF NOT EXISTS photos_size ON photos(size);
-CREATE INDEX IF NOT EXISTS photos_sha ON photos(sha256);
-CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
-"""
-
 
 class Cancelled(Exception):
     pass
@@ -109,8 +91,8 @@ class Scanner:
         self._lock = threading.Lock()
         self._cancel = False
         self.state = self._blank_state()
+        init(cfg)
         with self._db() as conn:
-            conn.executescript(SCHEMA)
             row = conn.execute("SELECT value FROM meta WHERE key='last_scan'").fetchone()
         if row:
             try:
@@ -124,19 +106,8 @@ class Scanner:
                 "files": 0, "bytes": 0, "to_hash": 0, "hashed": 0, "errors": 0,
                 "current": None, "cancelled": False, "error": None}
 
-    @contextmanager
     def _db(self):
-        """A short-lived connection: committed on success, rolled back on error, always closed."""
-        conn = sqlite3.connect(self.cfg.db_path, timeout=30)
-        try:
-            conn.execute("PRAGMA journal_mode=WAL")
-            yield conn
-            conn.commit()
-        except BaseException:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+        return db(self.cfg)
 
     # --- control -----------------------------------------------------------------
     def start(self, root: Path) -> bool:

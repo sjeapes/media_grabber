@@ -10,11 +10,14 @@ Choice of NAS (persisted in /data/storage.json):
   "<path>" – a specific network storage mount
 We never fall back to Home Assistant's own disk: a missing NAS means "not ready".
 
-Folders (persisted in /data/settings.json, stored relative to the NAS root so they
-survive the NAS being remounted under a different name):
-  photo_folder       – where the CR2 files live (chosen in the app; read-only)
-  processed_folder   – where developed JPEGs will go (milestone 2)
-  quarantine_folder  – where rejected photos will be moved (milestone 3)
+Settings (persisted in /data/settings.json; folders are stored relative to the NAS root so
+they survive the NAS being remounted under a different name):
+  photo_folder       – where the CR2 files live (chosen in the app)
+  processed_folder   – where developed JPEGs go when output_mode is "separate"
+  quarantine_folder  – where photos you choose to move are put (never deleted)
+  processing_enabled – developing RAW files is OFF until the user turns it on
+  output_mode        – "separate" (a mirror of the photo folder under processed_folder) or
+                       "alongside" (each JPEG saved next to its RAW file)
 """
 from __future__ import annotations
 
@@ -29,9 +32,16 @@ GB = 1024 ** 3
 # Folders NAS firmware creates that never hold real photos
 SKIP_DIRS = {"@eadir", "#recycle", "@recycle", "@recently-snapshot", "$recycle.bin", ".trash",
              ".trashes", ".recycle", "#snapshot", ".snapshot", ".snapshots", "lost+found"}
+FOLDER_KEYS = ("photo_folder", "processed_folder", "quarantine_folder")
+OUTPUT_MODES = ("separate", "alongside")
 DEFAULT_SETTINGS = {"photo_folder": None,
                     "processed_folder": "PhotoManager/Processed",
-                    "quarantine_folder": "PhotoManager/Quarantine"}
+                    "quarantine_folder": "PhotoManager/Quarantine",
+                    "processing_enabled": False,
+                    "output_mode": "separate",
+                    "develop_scope": "",          # sub-folder of the photo folder ("" = all of it)
+                    "skip_with_jpeg": False}      # leave RAWs that already have a camera JPEG
+DEVELOPED_SUFFIX = "_developed"
 _pool = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="fs")
 
 
@@ -124,6 +134,15 @@ class Storage:
         try:
             saved = json.loads(self.settings_file.read_text())
             s.update({k: saved[k] for k in DEFAULT_SETTINGS if k in saved})
+            s["processing_enabled"] = s["processing_enabled"] is True   # anything odd means off
+            if s["output_mode"] not in OUTPUT_MODES:
+                s["output_mode"] = "separate"
+            s["skip_with_jpeg"] = s["skip_with_jpeg"] is True
+            try:
+                s["develop_scope"] = clean_rel(s["develop_scope"]) if isinstance(
+                    s["develop_scope"], str) else ""
+            except FolderError:
+                s["develop_scope"] = ""
         except (OSError, ValueError):
             pass
         return s
@@ -234,6 +253,19 @@ class Storage:
                 "parent": parent, "dirs": dirs, "cr2_here": cr2,
                 "is_root": rel == ""}
 
+    @staticmethod
+    def _check_overlaps(settings: dict):
+        """The photo, quarantine (and, in 'separate' mode, developed) folders must be distinct."""
+        labels = {"photo_folder": "photo", "processed_folder": "developed photos",
+                  "quarantine_folder": "quarantine"}
+        used = [k for k in FOLDER_KEYS if settings.get(k)
+                and not (k == "processed_folder" and settings.get("output_mode") == "alongside")]
+        for i, a in enumerate(used):
+            for b in used[i + 1:]:
+                if _overlaps(settings[a], settings[b]):
+                    raise FolderError(f"The {labels[a]} folder and the {labels[b]} folder can't be "
+                                      "the same or inside each other")
+
     def set_folders(self, photo=None, processed=None, quarantine=None) -> dict:
         """Validate and save any of the three folders (None = leave unchanged)."""
         new = dict(self.settings)
@@ -243,6 +275,8 @@ class Storage:
                 raise FolderError("Choose a folder inside the NAS, not the whole share")
             if not self.abs_path(rel).is_dir():
                 raise FolderError("That folder doesn't exist on the NAS")
+            if rel != new["photo_folder"]:
+                new["develop_scope"] = ""         # the old test folder belonged to the old photo folder
             new["photo_folder"] = rel
         for key, val in (("processed_folder", processed), ("quarantine_folder", quarantine)):
             if val is not None:
@@ -250,23 +284,66 @@ class Storage:
                 if not rel:
                     raise FolderError("Choose a folder inside the NAS, not the whole share")
                 new[key] = rel
-        chosen = {k: v for k, v in new.items() if v}
-        for a in chosen:
-            for b in chosen:
-                if a < b and _overlaps(chosen[a], chosen[b]):
-                    raise FolderError(
-                        f"The {a.replace('_folder', '').replace('_', ' ')} folder and the "
-                        f"{b.replace('_folder', '').replace('_', ' ')} folder can't be the same "
-                        "or inside each other")
+        self._check_overlaps(new)
+        self._save_settings(new)
+        return self.folders()
+
+    def set_processing(self, enabled=None, output_mode=None, scope=None,
+                       skip_with_jpeg=None) -> dict:
+        """Turn developing on/off, choose where the JPEGs go, which folder to develop, and
+        whether RAWs that already have a camera JPEG are skipped."""
+        new = dict(self.settings)
+        if skip_with_jpeg is not None:
+            if not isinstance(skip_with_jpeg, bool):
+                raise FolderError("Invalid setting")
+            new["skip_with_jpeg"] = skip_with_jpeg
+        if scope is not None:
+            if not isinstance(scope, str):
+                raise FolderError("Invalid folder")
+            rel = clean_rel(scope)
+            if rel:
+                root = self.photo_dir()
+                if root is None:
+                    raise FolderError("Choose your photo folder first")
+                real_root, real = os.path.realpath(root), os.path.realpath(root / rel)
+                if not real.startswith(real_root + os.sep) or not os.path.isdir(real):
+                    raise FolderError("That folder isn't inside your photo folder")
+            new["develop_scope"] = rel
+        if enabled is not None:
+            if not isinstance(enabled, bool):
+                raise FolderError("Invalid setting")
+            new["processing_enabled"] = enabled
+        if output_mode is not None:
+            if output_mode not in OUTPUT_MODES:
+                raise FolderError("Choose where to save the JPEGs")
+            new["output_mode"] = output_mode
+        self._check_overlaps(new)
+        self._save_settings(new)
+        return {"enabled": new["processing_enabled"], "output_mode": new["output_mode"],
+                "scope": new["develop_scope"], "skip_with_jpeg": new["skip_with_jpeg"]}
+
+    def _save_settings(self, new: dict):
         with self._lock:
             self._write_json(self.settings_file, new)
             self.settings = new
-        return self.folders()
+
+    def developed_rel(self, rel: str) -> str:
+        """Where the developed JPEG for a RAW file goes, relative to the NAS root.
+
+        The name always ends in _developed.jpg so it can never collide with the camera's own
+        JPEG (IMG_0001.JPG) saved next to the RAW file."""
+        p = PurePosixPath(clean_rel(rel))
+        name = p.stem + DEVELOPED_SUFFIX + ".jpg"
+        if self.settings["output_mode"] == "alongside":
+            base = PurePosixPath(self.settings["photo_folder"] or "")
+        else:
+            base = PurePosixPath(self.settings["processed_folder"] or "")
+        return str(base / p.parent / name)
 
     def folders(self) -> dict:
         """The three folders as relative and absolute paths (absolute None if no NAS)."""
         out = {}
-        for key in DEFAULT_SETTINGS:
+        for key in FOLDER_KEYS:
             rel = self.settings.get(key)
             absolute = None
             if rel and self.cfg.base_path is not None:
@@ -295,6 +372,10 @@ class Storage:
         low = float(cfg.opt("low_space_gb"))
         out = {**r, "low_space_gb": low, "disk": None, "problems": [], "warnings": [],
                "healthy": False, "low_space": False, "folders": self.folders(),
+               "processing_enabled": self.settings["processing_enabled"],
+               "output_mode": self.settings["output_mode"],
+               "develop_scope": self.settings["develop_scope"],
+               "skip_with_jpeg": self.settings["skip_with_jpeg"],
                "photo_folder_ok": False,
                "ready": False}
         if r["error"]:

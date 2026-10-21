@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+"""Test stand-in for darktable-cli: same command line, writes a tiny valid JPEG.
+
+Markers inside the input file change what it does:
+  FAILME  -> exit 1 (as darktable does for a file it can't decode)
+  NOOUT   -> exit 0 but write nothing
+  BADJPEG -> write a truncated JPEG
+  SLOW    -> sleep a long time (for the timeout and cancel tests)
+Every call is appended to $PM_STUB_LOG so tests can check how it was run.
+"""
+import base64
+import json
+import os
+import sys
+import time
+
+JPEG = base64.b64decode("/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDABALDA4MChAODQ4SERATGCgaGBYWGDEjJR0oOjM9PDkzODdASFxOQERXRTc4UG1RV19iZ2hnPk1xeXBkeFxlZ2P/2wBDARESEhgVGC8aGi9jQjhCY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2P/wAARCAAEAAQDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDHooorhPqD/9k=")
+args = sys.argv[1:]
+if args[:1] == ["--version"]:
+    print("darktable 4.6.1 (test stub)")
+    sys.exit(0)
+src, dst = args[0], args[1]
+data = open(src, "rb").read()
+log = os.environ.get("PM_STUB_LOG")
+if log:
+    with open(log, "a") as fh:
+        fh.write(json.dumps({"args": args, "size": len(data), "src_dir": os.path.dirname(src),
+                             "home": os.environ.get("HOME")}) + "\n")
+if b"SLOW" in data:
+    time.sleep(60)
+if b"FAILME" in data:
+    print("[stub] cannot decode this file", file=sys.stderr)
+    sys.exit(1)
+if b"NOOUT" in data:
+    sys.exit(0)
+if b"BADJPEG" in data:
+    open(dst, "wb").write(JPEG[:30])
+    sys.exit(0)
+open(dst, "wb").write(JPEG)

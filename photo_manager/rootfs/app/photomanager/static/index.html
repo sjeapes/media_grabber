@@ -19,6 +19,8 @@
 
 <nav class="tabs" role="tablist">
   <button data-tab="library" class="on">Library</button>
+  <button data-tab="develop">Develop</button>
+  <button data-tab="quarantine">Quarantine</button>
   <button data-tab="storage">Storage</button>
 </nav>
 
@@ -29,6 +31,18 @@
   <section id="tab-library" class="tab on">
     <div class="card" id="scan-card"></div>
     <div id="report"></div>
+  </section>
+
+  <!-- Develop -->
+  <section id="tab-develop" class="tab"><div id="develop"><div class="empty"><span class="spinner"></span></div></div></section>
+
+  <!-- Quarantine -->
+  <section id="tab-quarantine" class="tab">
+    <div class="toolbar"><h2>Duplicate photos</h2><button id="dups-reload" class="ghost">Refresh</button></div>
+    <p class="hint" style="margin-top:0">Tick the copies to move to quarantine. At least one copy must stay unticked. Before anything moves, the files are read again and their CRC32 checksums are compared — the move only goes ahead if they all match. Nothing is deleted.</p>
+    <div id="dups"></div>
+    <div class="toolbar" style="margin-top:20px"><h2>In quarantine</h2><button id="q-forget" class="ghost">Clear emptied</button></div>
+    <div id="qlist"></div>
   </section>
 
   <!-- Storage -->

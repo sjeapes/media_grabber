@@ -10,6 +10,7 @@ const fmtDate = (s) => (s ? s.slice(0, 10) : "—");
 let STATUS = null;
 let pollTimer = null;
 let wasRunning = false;
+let wasDeveloping = false;
 
 async function api(path, opts = {}) {
   const init = { method: opts.method || "GET", headers: {} };
@@ -51,10 +52,12 @@ async function loadStatus() {
   let next = 15000;
   try {
     STATUS = await api("status");
-    const running = STATUS.scan.running;
+    const running = STATUS.scan.running || STATUS.develop.running;
     next = running ? 1500 : 15000;
     renderPills(); renderBanner(); renderScanCard();
     if (onTab("storage")) { renderFolders(); renderNasCard(); }
+    if (onTab("develop") && (STATUS.develop.running || wasDeveloping)) loadDevelop();
+    wasDeveloping = STATUS.develop.running;
     if (running && Date.now() - (loadStatus._reportAt || 0) > 3000) { loadStatus._reportAt = Date.now(); loadReport(); }
     if (wasRunning && !running) loadReport();
     wasRunning = running;
@@ -69,6 +72,9 @@ function renderPills() {
     : nas.needs_choice ? "Choose your NAS" : "No NAS";
   let html = `<button class="pill" data-go="storage"><span class="dot ${nasCls}"></span>${esc(nasTxt)}</button>`;
   if (scan.running) html += `<button class="pill" data-go="library"><span class="spinner"></span>Scanning</button>`;
+  const dv = STATUS.develop;
+  if (dv.running) html += `<button class="pill" data-go="develop"><span class="spinner"></span>Developing ${fmtN(dv.done)}${dv.total ? " of " + fmtN(dv.total) : ""}</button>`;
+  else if (dv.enabled) html += `<button class="pill" data-go="develop"><span class="dot ok"></span>Developing on</button>`;
   $("#pills").innerHTML = html;
   $("#pills").querySelectorAll("[data-go]").forEach((p) => p.addEventListener("click", () => showTab(p.dataset.go)));
 }
@@ -99,7 +105,7 @@ function renderScanCard() {
       <div class="row end"><button class="primary" data-go="storage">Open Storage</button></div>`;
   } else if (!photo.rel) {
     card.innerHTML = `<div class="headline"><span class="dot warn"></span>Choose your photo folder</div>
-      <p class="hint">Pick the folder on your NAS that holds your CR2 photos. Photo Manager only reads it — it never changes or deletes anything there.</p>
+      <p class="hint">Pick the folder on your NAS that holds your CR2 photos. Photo Manager never changes or deletes your existing photos.</p>
       <div class="row end"><button class="primary" data-go="storage">Choose folder</button></div>`;
   } else {
     let status;
@@ -119,13 +125,13 @@ function renderScanCard() {
         <div>${scan.running ? `<button class="ghost" id="scan-cancel">Cancel</button>`
           : `<button class="primary" id="scan-go" ${nas.ready ? "" : "disabled"}>${scan.finished ? "Scan again" : "Scan now"}</button>`}</div>
       </div>
-      <p class="hint">Read-only: scanning only looks at your photos. Nothing is moved, changed or deleted.</p>`;
+      <p class="hint">Scanning only looks at your photos. Nothing is moved, changed or deleted.</p>`;
   }
   card.querySelectorAll("[data-go]").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.go)));
   const go = $("#scan-go");
   go && go.addEventListener("click", async () => {
     go.disabled = true;
-    try { await api("scan", { method: "POST" }); } catch (e) { toast(e.message); }
+    try { await api("scan", { method: "POST" }); wasRunning = true; } catch (e) { toast(e.message); }
     loadStatus();
   });
   const cancel = $("#scan-cancel");
@@ -161,9 +167,8 @@ async function loadReport() {
   if (rep.state.running && rep.state.phase !== "hashing" && !d.groups) dup = `<p class="hint">Duplicates are checked at the end of the scan.</p>`;
   else if (!d.groups) dup = `<div class="headline"><span class="dot ok"></span>No exact duplicates found</div>`;
   else dup = `<div class="headline"><span class="dot warn"></span>${fmtN(d.groups)} duplicate ${d.groups === 1 ? "group" : "groups"} — ${fmtN(d.extra_files)} extra ${d.extra_files === 1 ? "copy" : "copies"}, ${fmtSize(d.reclaimable_gb)} could be freed</div>
-      <p class="hint">Byte-for-byte identical files. Nothing is deleted — duplicates will be handled when you review photos in a later version.</p>` +
-      d.top.map((g) => `<details class="dup"><summary>${g.count} copies · ${g.size_mb} MB each</summary><ul>${g.files.map((f) => `<li>${esc(f)}</li>`).join("")}</ul></details>`).join("") +
-      (d.groups > d.top.length ? `<p class="hint">Showing the ${d.top.length} biggest groups.</p>` : "");
+      <p class="hint">Byte-for-byte identical files. You choose which copies move to quarantine — nothing is deleted.</p>
+      <div class="row end"><button class="primary" data-go="quarantine">Review duplicates</button></div>`;
 
   const notes = [];
   if (rep.dated_from_file) notes.push(`${plural(rep.dated_from_file, "photo has", "photos have")} no readable capture time and ${rep.dated_from_file === 1 ? "is" : "are"} listed as "Unknown" by year.`);
@@ -176,6 +181,7 @@ async function loadReport() {
     <div class="card"><h3>Busiest folders</h3>${barList(rep.folders.map((f) => ({ name: f.path, n: f.files })), "name", "n")}
       ${rep.folder_count > rep.folders.length ? `<p class="hint">Showing ${rep.folders.length} of ${fmtN(rep.folder_count)} folders.</p>` : ""}</div>
     ${notes.length ? `<p class="note">${notes.map(esc).join(" ")}</p>` : ""}`;
+  el.querySelectorAll("[data-go]").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.go)));
 }
 loaders.library = () => { loadStatus(); loadReport(); };
 
@@ -222,8 +228,8 @@ function renderNasCard() {
 
 const FOLDER_ROWS = [
   { key: "photo", label: "Photo folder", sub: "Where your CR2 photos are. Read-only — sub-folders are included." },
-  { key: "processed", label: "Developed photos", sub: "Where JPEGs will be saved. Used from the next version; created when needed." },
-  { key: "quarantine", label: "Quarantine", sub: "Where rejected photos will be moved, never deleted. Used from a later version." },
+  { key: "processed", label: "Developed photos", sub: "Where developed JPEGs are saved (when set to “separate folder” on the Develop tab). Created when needed." },
+  { key: "quarantine", label: "Quarantine", sub: "Where duplicate copies you choose are moved — never deleted. Created when needed." },
 ];
 
 function renderFolders() {
@@ -232,9 +238,10 @@ function renderFolders() {
   const usable = !!nas.path && !nas.error;
   $("#folders").innerHTML = `<div class="card">` + FOLDER_ROWS.map((r) => {
     const f = nas.folders[r.key];
-    return `<div class="frow"><div class="val"><div class="lbl">${r.label}</div>
+    const unused = r.key === "processed" && nas.output_mode === "alongside";
+    return `<div class="frow ${unused ? "off" : ""}"><div class="val"><div class="lbl">${r.label}</div>
       <div>${f.rel ? `<code>${esc(f.rel)}</code>` : `<span class="sm">Not chosen yet</span>`}</div>
-      <div class="sm">${r.sub}</div></div>
+      <div class="sm">${unused ? "Not used — JPEGs are saved next to each RAW file (change on the Develop tab)." : r.sub}</div></div>
       <button class="ghost" data-pick="${r.key}" ${usable ? "" : "disabled"}>${f.rel ? "Change…" : "Choose…"}</button></div>`;
   }).join("") + `</div>`;
   $("#folders").querySelectorAll("[data-pick]").forEach((b) => b.addEventListener("click", () => chooseFolder(b.dataset.pick)));
@@ -261,14 +268,14 @@ function pickFolder({ title, kind, start }) {
     const newname = $("#picker-newname");
     let cur = "", info = null;
     $("#picker-title").textContent = title;
-    $("#picker-new").hidden = kind === "photo";
+    $("#picker-new").hidden = kind === "photo" || kind === "scope";
     newname.value = "";
 
     const target = () => {
       const name = newname.value.trim().replace(/[\\/]+/g, " ").trim();
       return name ? (cur ? cur + "/" + name : name) : cur;
     };
-    const refreshOk = () => { ok.disabled = !target(); };
+    const refreshOk = () => { ok.disabled = !target() && kind !== "scope"; };
     const done = (val) => {
       root.hidden = true;
       ok.onclick = $("#picker-cancel").onclick = $("#picker-x").onclick = root.onclick = newname.oninput = null;
@@ -295,8 +302,8 @@ function pickFolder({ title, kind, start }) {
         ? info.dirs.map((d) => `<button data-dir="${esc(d)}">📁 ${esc(d)}</button>`).join("")
         : `<div class="none">No sub-folders here</div>`;
       list.querySelectorAll("[data-dir]").forEach((b) => b.addEventListener("click", () => go((cur ? cur + "/" : "") + b.dataset.dir)));
-      $("#picker-info").textContent = kind === "photo"
-        ? (info.is_root ? "Open the folder that holds your photos, then press Use this folder."
+      $("#picker-info").textContent = kind === "photo" || kind === "scope"
+        ? (info.is_root ? "Open the folder you want, then press Use this folder."
           : `${fmtN(info.cr2_here)} CR2 photo${info.cr2_here === 1 ? "" : "s"} directly in this folder (sub-folders are included automatically).`)
         : "";
       refreshOk();
@@ -312,11 +319,200 @@ function pickFolder({ title, kind, start }) {
   });
 }
 
+
+// ---- develop ----------------------------------------------------------------------
+let DEV = null;
+async function loadDevelop() {
+  try { DEV = await api("develop"); } catch (e) { $("#develop").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  renderDevelop();
+}
+async function devSettings(body, msg) {
+  try { DEV = await api("develop/settings", { method: "POST", body }); if (msg) toast(msg); } catch (e) { toast(e.message); }
+  await loadStatus(); await loadDevelop();
+}
+function renderDevelop() {
+  if (!DEV || !STATUS) return;
+  const d = DEV, st = d.state, c = d.counts, dt = d.darktable;
+  const photoRel = STATUS.nas.folders.photo.rel;
+  const alongside = d.output_mode === "alongside";
+  const scoped = !!d.scope;
+  const win = `${String(d.window.start).padStart(2, "0")}:00–${String(d.window.end).padStart(2, "0")}:00`;
+  const ex = d.example ? `<p class="hint">Example: <code>${esc(d.example.raw)}</code> → <code>${esc(d.example.jpeg)}</code></p>` : "";
+
+  let run;
+  if (st.running) {
+    const pct = st.total ? Math.round(100 * st.done / st.total) : 0;
+    run = `<div class="headline"><span class="spinner"></span>${st.phase === "scanning" ? "Scanning for new photos…" : `Developing ${fmtN(st.done)} of ${fmtN(st.total)}`}</div>
+      <div class="progress"><i style="width:${pct}%"></i></div>
+      <p class="hint">${esc(st.current || "")}${st.failed ? ` · ${fmtN(st.failed)} failed` : ""}</p>
+      <div class="row end"><button class="ghost" id="dv-stop">Stop</button></div>`;
+  } else {
+    let last = "";
+    if (st.finished) {
+      last = `Last run ${ago(st.finished)} (${st.trigger === "schedule" ? "overnight" : "manual"}): ${plural(st.done, "photo", "photos")} developed` +
+        (st.failed ? `, ${fmtN(st.failed)} failed` : "") + (st.stop_text ? ` · ${esc(st.stop_text)}` : "") + (st.error ? ` · ${esc(st.error)}` : "");
+    }
+    const why = !d.enabled ? "Switch developing on first." : !dt.available ? esc(dt.error || "darktable isn't available.") : "";
+    run = `<div class="row between"><div><div class="headline">${plural(c.pending, "photo", "photos")} waiting${scoped ? ` <span class="scope-tag">only ${esc(d.scope)}</span>` : ""}</div>
+        <p class="hint">${last || "Nothing has been developed yet."}</p></div>
+        <button class="primary" id="dv-run" ${d.enabled && dt.available && c.pending ? "" : "disabled"}>Develop now</button></div>
+      ${why ? `<p class="hint">${why}</p>` : ""}`;
+  }
+
+  const fails = d.failed.length ? `<div class="sec"><div class="row between"><h3>Couldn't develop (${fmtN(c.failed)})</h3>
+      <button class="ghost" id="dv-retry">Retry failed</button></div>
+      <ul class="fails">${d.failed.slice(0, 10).map((f) => `<li><code>${esc(f.rel)}</code><span class="sm">${esc(f.error || "")} · ${f.will_retry ? `attempt ${f.attempts} of 3, will retry` : "gave up after 3 attempts"}</span></li>`).join("")}</ul>
+      ${d.failed.length > 10 ? `<p class="hint">Showing 10 of ${fmtN(d.failed.length)}.</p>` : ""}</div>` : "";
+
+  $("#develop").innerHTML = `
+    <div class="card">
+      <label class="switch"><input type="checkbox" id="dv-enable" ${d.enabled ? "checked" : ""}><span class="track"></span>
+        Automatic developing is ${d.enabled ? "on" : "off"}</label>
+      <p class="hint">Converts your CR2 files to JPEG with darktable. It is <b>off</b> until you switch it on. When on, it runs by itself between <b>${win}</b> and can also be started by hand. A new JPEG never replaces a file that already exists, and your CR2 files are never touched.</p>
+      ${!dt.available ? `<p class="hint danger">${esc(dt.error || "darktable isn't available.")}</p>` : `<p class="hint">${esc(dt.version || "darktable")} · JPEG quality ${d.jpeg_quality}</p>`}
+    </div>
+    <div class="card">${run}${fails}</div>
+    <div class="card"><h3>Where to save the JPEGs</h3>
+      <label class="opt ${!alongside ? "sel" : ""}"><input type="radio" name="dv-mode" value="separate" ${!alongside ? "checked" : ""}><span><b>In a separate folder</b><span class="sm">Keeps your photo folder exactly as it is. Folder: <code>${esc(STATUS.nas.folders.processed.rel || "—")}</code> (change on the Storage tab)</span></span></label>
+      <label class="opt ${alongside ? "sel" : ""}"><input type="radio" name="dv-mode" value="alongside" ${alongside ? "checked" : ""}><span><b>Next to each RAW file</b><span class="sm">Adds a <code>_developed.jpg</code> in the same folder as each CR2. Existing files are never changed or replaced.</span></span></label>
+      ${ex}
+    </div>
+    <div class="card"><h3>Which photos</h3>
+      <div class="row between"><div>${scoped ? `Only <code>${esc(d.scope)}</code> <span class="sm">(inside the photo folder)</span>` : "All photos in the photo folder"}</div>
+        <div class="row"><button class="ghost" id="dv-scope" ${photoRel ? "" : "disabled"}>${scoped ? "Change…" : "Choose a folder…"}</button>
+        ${scoped ? `<button class="ghost" id="dv-scope-clear">All photos</button>` : ""}</div></div>
+      <p class="hint">Pick one folder to try things out on a few photos first. Applies to manual and overnight runs.</p>
+      <label class="check"><input type="checkbox" id="dv-skip" ${d.skip_with_jpeg ? "checked" : ""}><span><b>Skip photos that already have a JPEG</b>
+        <span class="sm">Leaves a CR2 alone when there is already a JPEG with the same name in its folder${c.with_camera_jpeg ? ` (${fmtN(c.with_camera_jpeg)} such photo${c.with_camera_jpeg === 1 ? "" : "s"} right now)` : ""}.</span></span></label>
+      ${c.duplicates_skipped ? `<p class="hint">${plural(c.duplicates_skipped, "identical copy is", "identical copies are")} developed only once.</p>` : ""}
+    </div>
+    <p class="note">${fmtN(c.developed)} developed so far · ${fmtN(c.photos)} photos in the library. The overnight window is set in the add-on's Configuration tab.</p>`;
+
+  $("#dv-enable").addEventListener("change", (e) => devSettings({ enabled: e.target.checked }, e.target.checked ? "Developing switched on" : "Developing switched off"));
+  document.querySelectorAll("input[name=dv-mode]").forEach((r) => r.addEventListener("change", () => devSettings({ output_mode: r.value }, "Saved")));
+  $("#dv-skip").addEventListener("change", (e) => devSettings({ skip_with_jpeg: e.target.checked }, "Saved"));
+  const clear = $("#dv-scope-clear"); clear && clear.addEventListener("click", () => devSettings({ scope: "" }, "Developing all photos"));
+  $("#dv-scope").addEventListener("click", async () => {
+    const start = photoRel + (d.scope ? "/" + d.scope : "");
+    const rel = await pickFolder({ title: "Develop only this folder", kind: "scope", start });
+    if (rel === null) return;
+    if (rel !== photoRel && !rel.startsWith(photoRel + "/")) { toast("Pick a folder inside your photo folder"); return; }
+    devSettings({ scope: rel === photoRel ? "" : rel.slice(photoRel.length + 1) }, "Saved");
+  });
+  const go = $("#dv-run");
+  go && go.addEventListener("click", async () => { go.disabled = true; try { await api("develop/run", { method: "POST" }); wasDeveloping = true; } catch (e) { toast(e.message); } await loadStatus(); loadDevelop(); });
+  const stop = $("#dv-stop");
+  stop && stop.addEventListener("click", async () => { try { await api("develop/cancel", { method: "POST" }); toast("Stopping after the current photo…"); } catch (e) { toast(e.message); } });
+  const retry = $("#dv-retry");
+  retry && retry.addEventListener("click", async () => { try { const r = await api("develop/retry-failed", { method: "POST" }); toast(`${plural(r.reset, "photo", "photos")} will be tried again`); } catch (e) { toast(e.message); } loadDevelop(); });
+}
+loaders.develop = () => { loadStatus(); loadDevelop(); };
+
+// ---- quarantine ---------------------------------------------------------------------
+const GROUPS = new Map();   // group id -> { g, ticked:Set, verified:null|{...}, msg }
+let dupTotal = 0, dupLoaded = 0;
+const GROUP_PAGE = 10;
+
+async function loadDups(reset = true) {
+  if (reset) { GROUPS.clear(); dupLoaded = 0; $("#dups").innerHTML = `<div class="empty"><span class="spinner"></span></div>`; }
+  let r;
+  try { r = await api(`duplicates?offset=${dupLoaded}&limit=${GROUP_PAGE}`); } catch (e) { $("#dups").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  dupTotal = r.total; dupLoaded += r.groups.length;
+  r.groups.forEach((g) => GROUPS.set(g.id, { g, ticked: new Set(), verified: null, msg: null }));
+  renderDups();
+}
+const keepOf = (s) => s.g.files.find((f) => !s.ticked.has(f.rel));
+
+function renderDups() {
+  const box = $("#dups");
+  if (!dupTotal) { box.innerHTML = `<div class="empty">No duplicate photos found. Scan the library on the Library tab to check again.</div>`; return; }
+  box.innerHTML = [...GROUPS.values()].map(({ g }) => `<div class="card group" data-gid="${esc(g.id)}"></div>`).join("") +
+    (dupLoaded < dupTotal ? `<div class="row end"><button class="ghost" id="dups-more">Show more (${fmtN(dupTotal - dupLoaded)} more groups)</button></div>` : "");
+  GROUPS.forEach((_, id) => renderGroup(id));
+  const more = $("#dups-more"); more && more.addEventListener("click", () => loadDups(false));
+}
+
+function renderGroup(id) {
+  const s = GROUPS.get(id);
+  const el = document.querySelector(`.group[data-gid="${CSS.escape(id)}"]`);
+  if (!s || !el) return;
+  const { g } = s;
+  const keep = keepOf(s);
+  const n = s.ticked.size;
+  const v = s.verified;
+  const vf = (rel) => (v ? (rel === (v.keep && v.keep.rel) ? v.keep : v.files.find((f) => f.rel === rel)) : null);
+  const rows = g.files.map((f) => {
+    const isKeep = keep && f.rel === keep.rel;
+    const x = vf(f.rel);
+    let crc = "";
+    if (x) {
+      const ok = isKeep ? !x.problem : x.match;
+      crc = x.problem && !x.crc32 ? `<span class="crc badv">${esc(x.problem)}</span>`
+        : `<span class="crc ${isKeep ? "" : ok ? "good" : "badv"}">${esc(x.crc32 || "")} ${isKeep ? "" : ok ? "✓ same" : "✗ different"}</span>`;
+    } else if (isKeep) crc = `<span class="tag">Stays</span>`;
+    return `<label class="gfile ${isKeep ? "keep" : ""}"><input type="checkbox" data-rel="${esc(f.rel)}" ${s.ticked.has(f.rel) ? "checked" : ""}>
+      <span class="path">${esc(f.rel)}<span class="sm">${esc(fmtDate(f.taken))} · ${(f.size / 1048576).toFixed(1)} MB</span></span>${crc}</label>`;
+  }).join("");
+  const keepNote = n && keep ? `Keeping <code>${esc(keep.rel)}</code>` : "Tick the copies to move to quarantine.";
+  el.innerHTML = `<div class="ghead"><span>${g.count} identical copies</span><span class="sm hint" style="margin:0">${(g.size / 1048576).toFixed(1)} MB each</span></div>
+    ${rows}
+    <p class="hint">${keepNote}${n === g.count ? ` <b class="danger">Untick at least one — a copy has to stay.</b>` : ""}</p>
+    ${s.msg ? `<div class="gmsg ${s.msg.cls}">${esc(s.msg.text)}</div>` : ""}
+    <div class="gactions">
+      <button class="ghost" data-act="auto">Keep first, tick the rest</button>
+      <button class="ghost" data-act="verify" ${n && n < g.count ? "" : "disabled"}>Check checksums</button>
+      <button class="primary" data-act="move" ${v && v.all_match && n && n < g.count ? "" : "disabled"}>Move ${n || ""} to quarantine</button>
+    </div>`;
+  el.querySelectorAll("input[type=checkbox]").forEach((cb) => cb.addEventListener("change", () => {
+    cb.checked ? s.ticked.add(cb.dataset.rel) : s.ticked.delete(cb.dataset.rel);
+    s.verified = null; s.msg = null;           // any change in the selection needs a fresh check
+    renderGroup(id);
+  }));
+  el.querySelector('[data-act="auto"]').addEventListener("click", () => {
+    s.ticked = new Set(g.files.slice(1).map((f) => f.rel)); s.verified = null; s.msg = null; renderGroup(id);
+  });
+  el.querySelector('[data-act="verify"]').addEventListener("click", async (e) => {
+    const b = e.currentTarget; b.disabled = true; b.textContent = "Reading files…";
+    try {
+      s.verified = await api("quarantine/verify", { method: "POST", body: { keep: keepOf(s).rel, move: [...s.ticked] } });
+      s.msg = s.verified.all_match ? { cls: "good", text: `✓ Checksums match (${s.verified.keep.crc32}) — safe to move.` }
+        : { cls: "badv", text: "✗ The checksums don't all match, so these can't be moved." };
+    } catch (err) { s.verified = null; s.msg = { cls: "badv", text: err.message }; }
+    renderGroup(id);
+  });
+  el.querySelector('[data-act="move"]').addEventListener("click", async (e) => {
+    const b = e.currentTarget; b.disabled = true;
+    try {
+      const r = await api("quarantine/move", { method: "POST", body: { keep: keepOf(s).rel, move: [...s.ticked] } });
+      toast(r.errors.length ? `${r.moved.length} moved, ${r.errors.length} failed: ${r.errors[0].error}` : `${plural(r.moved.length, "photo", "photos")} moved to quarantine`);
+    } catch (err) { s.msg = { cls: "badv", text: err.message }; s.verified = null; renderGroup(id); return; }
+    loadDups(); loadQuarantine(); loadStatus();
+  });
+}
+
+async function loadQuarantine() {
+  let q;
+  try { q = await api("quarantine"); } catch (e) { $("#qlist").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  if (!q.items.length) { $("#qlist").innerHTML = `<div class="empty">Nothing in quarantine.</div>`; return; }
+  $("#qlist").innerHTML = `<div class="card"><p class="hint" style="margin-top:0">${plural(q.files, "file", "files")} in <code>${esc(q.folder || "")}</code> · ${fmtSize(q.bytes / 1073741824)}. Delete them yourself from the NAS when you're sure; use “Clear emptied” afterwards to tidy this list.</p>` +
+    q.items.map((i) => `<div class="qitem"><div><code>${esc(i.rel)}</code><span class="sm">Copy of ${esc(i.keep_rel)} · CRC32 ${esc(i.crc32 || "")}${i.present ? "" : " · no longer in the quarantine folder"}</span></div>
+      <button class="ghost" data-restore="${i.id}" ${i.present ? "" : "disabled"}>Restore</button></div>`).join("") + `</div>`;
+  $("#qlist").querySelectorAll("[data-restore]").forEach((b) => b.addEventListener("click", async () => {
+    b.disabled = true;
+    try { await api("quarantine/restore", { method: "POST", body: { id: Number(b.dataset.restore) } }); toast("Put back where it was"); loadDups(); }
+    catch (e) { toast(e.message); }
+    loadQuarantine(); loadStatus();
+  }));
+}
+$("#dups-reload").addEventListener("click", () => loadDups());
+$("#q-forget").addEventListener("click", async () => { try { const r = await api("quarantine/forget-missing", { method: "POST" }); toast(`${plural(r.forgotten, "entry", "entries")} cleared`); } catch (e) { toast(e.message); } loadQuarantine(); });
+loaders.quarantine = () => { loadStatus(); loadDups(); loadQuarantine(); };
+
 // ---- start ------------------------------------------------------------------------
 (function init() {
   let tab = "library";
   try { tab = localStorage.getItem("pm-tab") || "library"; } catch { /* ignore */ }
-  if (!["library", "storage"].includes(tab)) tab = "library";
+  if (!["library", "develop", "quarantine", "storage"].includes(tab)) tab = "library";
   showTab(tab);
   loadStatus();
   if (tab !== "library") loadReport();

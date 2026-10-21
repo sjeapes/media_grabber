@@ -12,6 +12,8 @@ DEFAULTS = {
     "develop_end_hour": 6,
     "develop_min_free_gb": 5,     # stop developing below this much free space on the NAS
     "jpeg_quality": 92,
+    "google_client_id": "",       # OAuth client for Google Photos upload (optional)
+    "google_client_secret": "",
 }
 
 

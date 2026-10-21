@@ -1,7 +1,7 @@
 name: Photo Manager
-version: "0.2.0"
+version: "0.3.0"
 slug: photo_manager
-description: Finds the Canon CR2 photos on your NAS, reports what you have (including exact duplicates), can develop them to JPEGs overnight with darktable (off until you turn it on), and lets you move duplicate copies to a quarantine folder after a checksum check.
+description: Finds the Canon CR2 photos on your NAS, reports what you have (including exact duplicates), can develop them to JPEGs overnight with darktable (off until you turn it on), lets you move duplicate copies to a quarantine folder after a checksum check, shows photo thumbnails, and can upload developed JPEGs to Google Photos.
 url: https://github.com/sjeapes/media_grabber/tree/main/photo_manager
 arch:
   - amd64
@@ -24,9 +24,13 @@ options:
   develop_end_hour: 6
   develop_min_free_gb: 5
   jpeg_quality: 92
+  google_client_id: ""
+  google_client_secret: ""
 schema:
   low_space_gb: int(1,100000)
   develop_start_hour: int(0,23)
   develop_end_hour: int(0,23)
   develop_min_free_gb: int(1,100000)
   jpeg_quality: int(50,100)
+  google_client_id: str?
+  google_client_secret: password?

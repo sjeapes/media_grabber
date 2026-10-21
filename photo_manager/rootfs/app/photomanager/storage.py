@@ -40,7 +40,8 @@ DEFAULT_SETTINGS = {"photo_folder": None,
                     "processing_enabled": False,
                     "output_mode": "separate",
                     "develop_scope": "",          # sub-folder of the photo folder ("" = all of it)
-                    "skip_with_jpeg": False}      # leave RAWs that already have a camera JPEG
+                    "skip_with_jpeg": False,       # leave RAWs that already have a camera JPEG
+                    "google_upload": False}        # automatically upload developed JPEGs to Google Photos
 DEVELOPED_SUFFIX = "_developed"
 _pool = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="fs")
 
@@ -138,6 +139,7 @@ class Storage:
             if s["output_mode"] not in OUTPUT_MODES:
                 s["output_mode"] = "separate"
             s["skip_with_jpeg"] = s["skip_with_jpeg"] is True
+            s["google_upload"] = s["google_upload"] is True
             try:
                 s["develop_scope"] = clean_rel(s["develop_scope"]) if isinstance(
                     s["develop_scope"], str) else ""
@@ -321,6 +323,12 @@ class Storage:
         self._save_settings(new)
         return {"enabled": new["processing_enabled"], "output_mode": new["output_mode"],
                 "scope": new["develop_scope"], "skip_with_jpeg": new["skip_with_jpeg"]}
+
+    def set_google_upload(self, enabled) -> bool:
+        if not isinstance(enabled, bool):
+            raise FolderError("Invalid setting")
+        self._save_settings({**self.settings, "google_upload": enabled})
+        return enabled
 
     def _save_settings(self, new: dict):
         with self._lock:

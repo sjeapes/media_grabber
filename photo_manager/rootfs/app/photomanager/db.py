@@ -33,6 +33,18 @@ CREATE TABLE IF NOT EXISTS developed (
     error      TEXT
 );
 
+-- Developed JPEGs sent to Google Photos (so nothing is ever uploaded twice)
+CREATE TABLE IF NOT EXISTS uploaded (
+    out_rel    TEXT PRIMARY KEY,   -- the JPEG's path relative to the NAS root
+    raw_rel    TEXT,
+    size       INTEGER,
+    media_id   TEXT,               -- Google Photos id of the new item
+    status     TEXT NOT NULL,      -- 'done' or 'failed'
+    attempts   INTEGER NOT NULL DEFAULT 0,
+    error      TEXT,
+    at         REAL
+);
+
 -- Photos moved to the quarantine folder (never deleted by this add-on)
 CREATE TABLE IF NOT EXISTS quarantined (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,

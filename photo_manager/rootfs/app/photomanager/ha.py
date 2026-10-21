@@ -35,7 +35,7 @@ class HAClient:
     def event(self, event_type: str, data: dict):
         self._post(f"/events/{event_type}", data)
 
-    def publish(self, nas: dict, report: dict, develop: dict, quarantine: dict):
+    def publish(self, nas: dict, report: dict, develop: dict, quarantine: dict, upload: dict | None = None):
         disk = nas.get("disk") or {}
         self.state("binary_sensor.photo_manager_storage_problem",
                    "off" if nas["healthy"] else "on",
@@ -72,6 +72,14 @@ class HAClient:
                    friendly_name=f"{DEVICE} quarantine", unit_of_measurement="photos",
                    icon="mdi:archive-arrow-down", folder=quarantine["folder"],
                    size_gb=round(quarantine["bytes"] / 1024 ** 3, 2))
+        if upload is not None:
+            uc, us = upload["counts"], upload["state"]
+            self.state("sensor.photo_manager_google_photos", uc["uploaded"],
+                       friendly_name=f"{DEVICE} uploaded to Google Photos", unit_of_measurement="photos",
+                       icon="mdi:google-photos", connected=upload["connected"],
+                       auto_upload=upload["enabled"], waiting=uc["pending"], failed=uc["failed"],
+                       uploading=bool(us.get("running")), last_run=us.get("finished"),
+                       last_run_uploaded=us.get("done"), last_run_stopped=us.get("stop_text"))
         total = report.get("total_files")
         if total is None:
             return

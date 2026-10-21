@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.0
+
+- **Thumbnails** in the Quarantine tab: the copy that stays is shown larger, and
+  every duplicate has a small picture (tap to enlarge; a “Thumbnails” tickbox
+  turns them off). Pictures come from the preview built into each CR2 file, are
+  shrunk and cached in the add-on's private storage, and respect the camera's
+  rotation.
+- **Google Photos tab**: connect once, then developed JPEGs can be added to
+  Google Photos (no albums, add-only access, each JPEG sent once, nothing ever
+  deleted). *Automatic upload* is off by default; **Upload now** always works.
+  New entity `sensor.photo_manager_google_photos`. New options
+  `google_client_id` and `google_client_secret`.
+- **Develop now** no longer needs the automatic overnight switch — that switch
+  now only controls the overnight run.
+- Fixed a rare case where the overnight run could start twice in one night.
+
 ## 0.2.0
 
 - **Develop tab**: converts CR2 files to JPEG with darktable (automatic

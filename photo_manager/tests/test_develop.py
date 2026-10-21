@@ -61,18 +61,27 @@ def library(env, extra=()):
 
 
 # --- off by default -----------------------------------------------------------------------------
-def test_developing_is_off_by_default_and_nothing_runs(env):
+def test_automatic_developing_is_off_by_default_and_the_scheduler_does_nothing(env):
     library(env)
     d = env["c"].get("/api/develop").json
     assert d["enabled"] is False and d["output_mode"] == "separate"
     before = tree(env["nas"])
-    r = env["c"].post("/api/develop/run")
-    assert r.status_code == 400 and "turned off" in r.json["error"]
     env["proc"].clock = lambda: IN_WINDOW
     assert env["proc"].scheduled_tick() is False      # even inside the overnight window
     time.sleep(0.2)
     assert not env["proc"].state["running"]
     assert tree(env["nas"]) == before and not env["stub_log"].exists()
+
+
+def test_develop_now_works_with_the_automatic_switch_off(env):
+    library(env)
+    assert env["c"].get("/api/develop").json["enabled"] is False
+    st = develop_now(env)                              # no enable() call
+    assert st["done"] == 3 and st["trigger"] == "manual" and not st["stop_reason"]
+    assert len(stub_calls(env)) == 3
+    # …but the overnight run still needs the switch
+    with pytest.raises(processor_mod.DevelopError, match="Automatic developing is turned off"):
+        env["proc"].start("schedule", window="2026-10-21")
 
 
 def test_toggle_persists_and_odd_values_mean_off(env):
@@ -95,7 +104,6 @@ def test_status_shows_develop_summary(env):
 
 
 def test_run_needs_darktable_and_a_photo_folder(env):
-    enable(env)
     r = env["c"].post("/api/develop/run")
     assert r.status_code == 400 and "photo folder" in r.json["error"]
     env["cfg"].darktable = "no-such-darktable"
@@ -363,7 +371,7 @@ def test_low_space_stops_the_run_without_failures(env, monkeypatch):
     assert env["c"].get("/api/develop").json["counts"]["failed"] == 0
 
 
-def test_turning_developing_off_stops_after_the_current_photo(env, monkeypatch):
+def test_turning_the_switch_off_stops_a_scheduled_run_but_not_a_manual_one(env, monkeypatch):
     library(env)
     enable(env)
     real = env["proc"]._develop
@@ -373,7 +381,14 @@ def test_turning_developing_off_stops_after_the_current_photo(env, monkeypatch):
         env["c"].post("/api/develop/settings", json={"enabled": False})
         return res
     monkeypatch.setattr(env["proc"], "_develop", develop_then_switch_off)
-    st = develop_now(env)
+    st = develop_now(env)                              # manual: finishes everything
+    assert st["done"] == 3 and not st["stop_reason"]
+    enable(env)
+    env["proc"].clock = lambda: IN_WINDOW
+    put(env["photos"] / "2025" / "IMG_0009.CR2", build_cr2(taken="2025:01:01 10:00:00", pad=5))
+    put(env["photos"] / "2025" / "IMG_0010.CR2", build_cr2(taken="2025:01:02 10:00:00", pad=6))
+    assert env["proc"].scheduled_tick() is True        # scheduled: stops after the first photo
+    st = wait_develop(env)
     assert st["done"] == 1 and st["stop_reason"] == "disabled"
 
 

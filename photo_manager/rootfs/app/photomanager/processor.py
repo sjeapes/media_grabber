@@ -195,8 +195,8 @@ class Processor:
     # --- control ----------------------------------------------------------------------
     def start(self, trigger: str, window: str | None = None) -> dict:
         """Start a run in the background. Raises DevelopError if it can't start."""
-        if not self.storage.settings["processing_enabled"]:
-            raise DevelopError("Developing is turned off — switch it on first")
+        if trigger == "schedule" and not self.storage.settings["processing_enabled"]:
+            raise DevelopError("Automatic developing is turned off")     # manual runs don't need it
         dt = self.darktable()
         if not dt["available"]:
             raise DevelopError(dt["error"])
@@ -237,7 +237,7 @@ class Processor:
     def _should_stop(self, trigger: str) -> str | None:
         if self._cancel:
             return "cancelled"
-        if not self.storage.settings["processing_enabled"]:
+        if trigger == "schedule" and not self.storage.settings["processing_enabled"]:
             return "disabled"
         if trigger == "schedule" and not self.in_window():
             return "window"

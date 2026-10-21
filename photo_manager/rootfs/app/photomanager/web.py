@@ -6,13 +6,16 @@ import threading
 import time
 from pathlib import Path
 
-from flask import Flask, abort, jsonify, request, send_from_directory
+from flask import Flask, Response, abort, jsonify, request, send_from_directory
 
+from .gphotos import GoogleError, GooglePhotos
 from .ha import HAClient
 from .processor import DevelopError, Processor
 from .quarantine import Quarantine, QuarantineError
 from .scanner import Scanner
 from .storage import FolderError, Storage
+from .thumbs import Thumbs
+from .uploader import UploadError, Uploader
 
 log = logging.getLogger("photomanager")
 STATIC = Path(__file__).parent / "static"
@@ -25,12 +28,16 @@ class Services:
         self.scanner = Scanner(cfg, on_done=self.publish)
         self.processor = Processor(cfg, self.storage, self.scanner, on_done=self.on_develop_done)
         self.quarantine = Quarantine(cfg, self.storage)
+        self.thumbs = Thumbs(cfg, self.storage)
+        self.google = GooglePhotos(cfg)
+        self.uploader = Uploader(cfg, self.storage, self.google, on_done=self.publish)
         self.ha = HAClient(cfg)
 
     def publish(self):
         try:
             self.ha.publish(self.storage.status(), self.scanner.report(),
-                            self.processor.summary(), self.quarantine.listing())
+                            self.processor.summary(), self.quarantine.listing(),
+                            self.uploader.summary())
         except Exception:  # noqa: BLE001
             log.exception("publish failed")
 
@@ -39,6 +46,11 @@ class Services:
         self.ha.event("photo_manager_develop_finished", {
             "trigger": st.get("trigger"), "developed": st.get("done"), "failed": st.get("failed"),
             "stopped": st.get("stop_text"), "error": st.get("error")})
+        try:                        # send the fresh JPEGs to Google Photos if that is switched on
+            if self.uploader.enabled and self.google.connected:
+                self.uploader.start("auto")
+        except UploadError:
+            pass
         self.publish()
 
     def publisher_loop(self):
@@ -52,6 +64,8 @@ class Services:
             try:
                 if self.processor.scheduled_tick():
                     log.info("Started tonight's develop run")
+                elif self.uploader.scheduled_tick(self.processor.state["running"]):
+                    log.info("Started uploading waiting photos to Google Photos")
             except Exception:  # noqa: BLE001
                 log.exception("develop schedule check failed")
 
@@ -109,6 +123,11 @@ def create_app(svc: Services) -> Flask:
                         "develop": {"running": dv["running"], "done": dv["done"],
                                     "total": dv["total"], "phase": dv["phase"],
                                     "enabled": svc.storage.settings["processing_enabled"]},
+                        "upload": {"running": svc.uploader.state["running"],
+                                   "done": svc.uploader.state["done"],
+                                   "total": svc.uploader.state["total"],
+                                   "enabled": svc.storage.settings["google_upload"],
+                                   "connected": svc.google.connected},
                         "ha_connected": svc.ha.enabled})
 
     # --- NAS and folders -------------------------------------------------------
@@ -183,6 +202,20 @@ def create_app(svc: Services) -> Flask:
         svc.publish()
         return jsonify(svc.processor.summary())
 
+    @app.get("/api/thumb")
+    def thumb():
+        try:
+            if request.args.get("q"):
+                data = svc.thumbs.quarantined(int(request.args["q"]))
+            else:
+                data = svc.thumbs.library(request.args.get("rel", ""))
+        except (TypeError, ValueError):
+            data = None
+        if not data:
+            abort(404)
+        return Response(data, mimetype="image/jpeg",
+                        headers={"Cache-Control": "private, max-age=86400"})
+
     @app.post("/api/develop/run")
     def develop_run():
         try:
@@ -253,5 +286,65 @@ def create_app(svc: Services) -> Flask:
     @app.post("/api/quarantine/forget-missing")
     def quarantine_forget():
         return jsonify({"forgotten": svc.quarantine.forget_missing()})
+
+    # --- Google Photos ---------------------------------------------------------------------
+    @app.get("/api/google")
+    def google_get():
+        return jsonify(svc.uploader.summary())
+
+    @app.post("/api/google/auth-url")
+    def google_auth_url():
+        try:
+            return jsonify({"url": svc.google.auth_url()})
+        except GoogleError as exc:
+            return bad(str(exc))
+
+    @app.post("/api/google/connect")
+    def google_connect():
+        try:
+            svc.google.connect(str(body().get("redirect_url") or ""))
+        except GoogleError as exc:
+            return bad(str(exc))
+        svc.publish()
+        return jsonify(svc.uploader.summary())
+
+    @app.post("/api/google/disconnect")
+    def google_disconnect():
+        svc.google.disconnect()
+        try:
+            svc.storage.set_google_upload(False)
+        except FolderError:
+            pass
+        svc.publish()
+        return jsonify(svc.uploader.summary())
+
+    @app.post("/api/google/settings")
+    def google_settings():
+        enabled = body().get("upload")
+        if enabled is True and not svc.google.connected:
+            return bad("Connect Google Photos first")
+        try:
+            svc.storage.set_google_upload(enabled)
+        except FolderError as exc:
+            return bad(str(exc))
+        svc.publish()
+        return jsonify(svc.uploader.summary())
+
+    @app.post("/api/google/run")
+    def google_run():
+        try:
+            svc.uploader.start("manual")
+        except UploadError as exc:
+            return bad(str(exc), 409 if "already" in str(exc) else 400)
+        return jsonify(svc.uploader.summary())
+
+    @app.post("/api/google/cancel")
+    def google_cancel():
+        svc.uploader.cancel()
+        return jsonify({"ok": True})
+
+    @app.post("/api/google/retry-failed")
+    def google_retry():
+        return jsonify({"reset": svc.uploader.retry_failed()})
 
     return app

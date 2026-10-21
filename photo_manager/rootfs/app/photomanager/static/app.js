@@ -11,6 +11,7 @@ let STATUS = null;
 let pollTimer = null;
 let wasRunning = false;
 let wasDeveloping = false;
+let wasUploading = false;
 
 async function api(path, opts = {}) {
   const init = { method: opts.method || "GET", headers: {} };
@@ -52,12 +53,14 @@ async function loadStatus() {
   let next = 15000;
   try {
     STATUS = await api("status");
-    const running = STATUS.scan.running || STATUS.develop.running;
+    const running = STATUS.scan.running || STATUS.develop.running || STATUS.upload.running;
     next = running ? 1500 : 15000;
     renderPills(); renderBanner(); renderScanCard();
     if (onTab("storage")) { renderFolders(); renderNasCard(); }
     if (onTab("develop") && (STATUS.develop.running || wasDeveloping)) loadDevelop();
     wasDeveloping = STATUS.develop.running;
+    if (onTab("google") && (STATUS.upload.running || wasUploading)) loadGoogle();
+    wasUploading = STATUS.upload.running;
     if (running && Date.now() - (loadStatus._reportAt || 0) > 3000) { loadStatus._reportAt = Date.now(); loadReport(); }
     if (wasRunning && !running) loadReport();
     wasRunning = running;
@@ -74,7 +77,9 @@ function renderPills() {
   if (scan.running) html += `<button class="pill" data-go="library"><span class="spinner"></span>Scanning</button>`;
   const dv = STATUS.develop;
   if (dv.running) html += `<button class="pill" data-go="develop"><span class="spinner"></span>Developing ${fmtN(dv.done)}${dv.total ? " of " + fmtN(dv.total) : ""}</button>`;
-  else if (dv.enabled) html += `<button class="pill" data-go="develop"><span class="dot ok"></span>Developing on</button>`;
+  const up = STATUS.upload;
+  if (up.running) html += `<button class="pill" data-go="google"><span class="spinner"></span>Uploading ${fmtN(up.done)}${up.total ? " of " + fmtN(up.total) : ""}</button>`;
+  if (!dv.running && dv.enabled) html += `<button class="pill" data-go="develop"><span class="dot ok"></span>Developing on</button>`;
   $("#pills").innerHTML = html;
   $("#pills").querySelectorAll("[data-go]").forEach((p) => p.addEventListener("click", () => showTab(p.dataset.go)));
 }
@@ -352,10 +357,10 @@ function renderDevelop() {
       last = `Last run ${ago(st.finished)} (${st.trigger === "schedule" ? "overnight" : "manual"}): ${plural(st.done, "photo", "photos")} developed` +
         (st.failed ? `, ${fmtN(st.failed)} failed` : "") + (st.stop_text ? ` · ${esc(st.stop_text)}` : "") + (st.error ? ` · ${esc(st.error)}` : "");
     }
-    const why = !d.enabled ? "Switch developing on first." : !dt.available ? esc(dt.error || "darktable isn't available.") : "";
+    const why = !dt.available ? esc(dt.error || "darktable isn't available.") : "";
     run = `<div class="row between"><div><div class="headline">${plural(c.pending, "photo", "photos")} waiting${scoped ? ` <span class="scope-tag">only ${esc(d.scope)}</span>` : ""}</div>
         <p class="hint">${last || "Nothing has been developed yet."}</p></div>
-        <button class="primary" id="dv-run" ${d.enabled && dt.available && c.pending ? "" : "disabled"}>Develop now</button></div>
+        <button class="primary" id="dv-run" ${dt.available && c.pending ? "" : "disabled"}>Develop now</button></div>
       ${why ? `<p class="hint">${why}</p>` : ""}`;
   }
 
@@ -367,8 +372,8 @@ function renderDevelop() {
   $("#develop").innerHTML = `
     <div class="card">
       <label class="switch"><input type="checkbox" id="dv-enable" ${d.enabled ? "checked" : ""}><span class="track"></span>
-        Automatic developing is ${d.enabled ? "on" : "off"}</label>
-      <p class="hint">Converts your CR2 files to JPEG with darktable. It is <b>off</b> until you switch it on. When on, it runs by itself between <b>${win}</b> and can also be started by hand. A new JPEG never replaces a file that already exists, and your CR2 files are never touched.</p>
+        Automatic overnight developing is ${d.enabled ? "on" : "off"}</label>
+      <p class="hint">Converts your CR2 files to JPEG with darktable. This switch is <b>off</b> until you turn it on; when on, developing runs by itself between <b>${win}</b>. <b>Develop now</b> below always works, whatever this switch says. A new JPEG never replaces a file that already exists, and your CR2 files are never touched.</p>
       ${!dt.available ? `<p class="hint danger">${esc(dt.error || "darktable isn't available.")}</p>` : `<p class="hint">${esc(dt.version || "darktable")} · JPEG quality ${d.jpeg_quality}</p>`}
     </div>
     <div class="card">${run}${fails}</div>
@@ -407,6 +412,102 @@ function renderDevelop() {
   retry && retry.addEventListener("click", async () => { try { const r = await api("develop/retry-failed", { method: "POST" }); toast(`${plural(r.reset, "photo", "photos")} will be tried again`); } catch (e) { toast(e.message); } loadDevelop(); });
 }
 loaders.develop = () => { loadStatus(); loadDevelop(); };
+
+
+// ---- thumbnails ---------------------------------------------------------------------
+const showThumbs = () => { try { return localStorage.getItem("pm-thumbs") !== "0"; } catch { return true; } };
+const thumbImg = (src) => `<img class="thumb" loading="lazy" alt="" data-src="${esc(src)}">`;
+const bigImg = (src) => `<img class="big" loading="lazy" alt="" data-src="${esc(src)}">`;
+function wireImages(root) {
+  root.querySelectorAll("img[data-src]").forEach((img) => {
+    img.addEventListener("error", () => { img.removeAttribute("src"); img.classList.add("none"); img.alt = "No preview"; img.style.visibility = "hidden"; }, { once: true });
+    img.addEventListener("click", (e) => {
+      if (img.classList.contains("none")) return;
+      e.preventDefault(); e.stopPropagation();
+      $("#lightbox-img").src = img.dataset.src; $("#lightbox").hidden = false;
+    });
+    img.src = img.dataset.src;
+  });
+}
+$("#lightbox").addEventListener("click", () => { $("#lightbox").hidden = true; $("#lightbox-img").removeAttribute("src"); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") $("#lightbox").click(); });
+$("#show-thumbs").checked = showThumbs();
+$("#show-thumbs").addEventListener("change", (e) => {
+  try { localStorage.setItem("pm-thumbs", e.target.checked ? "1" : "0"); } catch { /* ignore */ }
+  renderDups(); loadQuarantine();
+});
+
+// ---- google photos ----------------------------------------------------------------------
+let GP = null, gpAuth = null;
+async function loadGoogle() {
+  try { GP = await api("google"); } catch (e) { $("#google").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  renderGoogle();
+}
+async function gpPost(path, body, msg) {
+  try { const r = await api("google/" + path, { method: "POST", body: body || {} }); if (msg) toast(msg); return r; }
+  catch (e) { toast(e.message); return null; }
+  finally { await loadStatus(); await loadGoogle(); }
+}
+function renderGoogle() {
+  if (!GP) return;
+  const g = GP, st = g.state, c = g.counts;
+  const box = $("#google");
+  if (!g.configured) {
+    box.innerHTML = `<div class="card"><div class="headline"><span class="dot warn"></span>Google Photos isn't set up yet</div>
+      <p class="hint">Photo Manager adds your developed JPEGs to Google Photos (no albums). It can only <b>add</b> photos — it can't see, change or delete anything already there. One-off setup, about five minutes:</p>
+      <ol class="steps">
+        <li>In the <b>Google Cloud console</b> create a project and turn on the <b>Photos Library API</b>.</li>
+        <li>Under <b>APIs &amp; Services → OAuth consent screen</b>, set it up as <b>External</b> and add yourself as a test user. Then press <b>Publish app</b> (you can ignore the “unverified” warning for your own use) — otherwise Google ends the sign-in after 7 days.</li>
+        <li>Under <b>Credentials</b> create an <b>OAuth client ID</b> of type <b>Desktop app</b>.</li>
+        <li>Copy its client ID and secret into this add-on's <b>Configuration</b> tab (<code>google_client_id</code>, <code>google_client_secret</code>), save, and restart the add-on.</li>
+      </ol></div>`;
+    return;
+  }
+  if (!g.connected) {
+    box.innerHTML = `<div class="card"><div class="headline"><span class="dot warn"></span>${g.needs_reconnect ? "Google sign-in expired" : "Not connected to Google Photos"}</div>
+      <p class="hint">Photo Manager only gets permission to <b>add</b> photos.</p>
+      ${gpAuth ? `<ol class="steps">
+        <li><a href="${esc(gpAuth)}" target="_blank" rel="noopener noreferrer">Open Google's sign-in page</a> and approve access.</li>
+        <li>Google then sends you to a page that <b>won't load</b> (it starts with <code>http://localhost</code>). That's expected — copy that page's full address from the address bar.</li>
+        <li>Paste it here:<div class="row" style="margin-top:6px"><input id="gp-paste" placeholder="http://localhost/?state=…&code=…" autocomplete="off"><button class="primary" id="gp-finish">Finish</button></div></li></ol>`
+      : `<div class="row end"><button class="primary" id="gp-connect">Connect Google Photos</button></div>`}</div>`;
+    const cn = $("#gp-connect");
+    cn && cn.addEventListener("click", async () => { const r = await gpPost("auth-url"); if (r) { gpAuth = r.url; renderGoogle(); } });
+    const fin = $("#gp-finish");
+    fin && fin.addEventListener("click", async () => {
+      const r = await gpPost("connect", { redirect_url: $("#gp-paste").value });
+      if (r) { gpAuth = null; toast("Connected to Google Photos"); renderGoogle(); }
+    });
+    return;
+  }
+  let run;
+  if (st.running) {
+    const pct = st.total ? Math.round(100 * st.done / st.total) : 0;
+    run = `<div class="headline"><span class="spinner"></span>Uploading ${fmtN(st.done)} of ${fmtN(st.total)}</div>
+      <div class="progress"><i style="width:${pct}%"></i></div><p class="hint">${esc(st.current || "")}${st.failed ? ` · ${fmtN(st.failed)} failed` : ""}</p>
+      <div class="row end"><button class="ghost" id="gp-stop">Stop</button></div>`;
+  } else {
+    const last = st.finished ? `Last run ${ago(st.finished)}: ${plural(st.done, "photo", "photos")} uploaded` + (st.failed ? `, ${fmtN(st.failed)} failed` : "") + (st.stop_text ? ` · ${esc(st.stop_text)}` : "") + (st.error ? ` · ${esc(st.error)}` : "") : "Nothing has been uploaded yet.";
+    run = `<div class="row between"><div><div class="headline">${plural(c.pending, "developed photo", "developed photos")} waiting</div><p class="hint">${last}</p></div>
+      <button class="primary" id="gp-run" ${c.pending ? "" : "disabled"}>Upload now</button></div>
+      ${c.pending ? "" : `<p class="hint">Photos appear here once they have been developed on the Develop tab.</p>`}`;
+  }
+  const fails = g.failed.length ? `<div class="sec"><div class="row between"><h3>Couldn't upload (${fmtN(c.failed)})</h3><button class="ghost" id="gp-retry">Retry failed</button></div>
+    <ul class="fails">${g.failed.slice(0, 10).map((f) => `<li><code>${esc(f.rel)}</code><span class="sm">${esc(f.error || "")} · ${f.will_retry ? `attempt ${f.attempts} of 3, will retry` : "gave up after 3 attempts"}</span></li>`).join("")}</ul></div>` : "";
+  box.innerHTML = `<div class="card">
+      <label class="switch"><input type="checkbox" id="gp-auto" ${g.enabled ? "checked" : ""}><span class="track"></span>Automatic upload is ${g.enabled ? "on" : "off"}</label>
+      <p class="hint">This switch is <b>off</b> until you turn it on. When on, each newly developed JPEG is added to Google Photos after developing finishes. <b>Upload now</b> below always works. Only JPEGs Photo Manager developed are sent, each one once, with no albums. Nothing is ever deleted — from your NAS or from Google.</p>
+      <p class="hint"><span class="dot ok"></span> Connected to Google Photos · ${fmtN(c.uploaded)} uploaded so far</p></div>
+    <div class="card">${run}${fails}</div>
+    <div class="row end"><button class="ghost" id="gp-disc">Disconnect</button></div>
+    <p class="note">Google only lets apps see photos they uploaded themselves, so Photo Manager can't tell whether a photo is already in your library from another source — it only avoids sending the same JPEG twice.</p>`;
+  $("#gp-auto").addEventListener("change", (e) => gpPost("settings", { upload: e.target.checked }, e.target.checked ? "Automatic upload on" : "Automatic upload off"));
+  const go = $("#gp-run"); go && go.addEventListener("click", async () => { go.disabled = true; await gpPost("run"); wasUploading = true; });
+  const stop = $("#gp-stop"); stop && stop.addEventListener("click", () => gpPost("cancel", {}, "Stopping after the current photo…"));
+  const retry = $("#gp-retry"); retry && retry.addEventListener("click", () => gpPost("retry-failed", {}, "Will try again"));
+  $("#gp-disc").addEventListener("click", () => { if (confirm("Disconnect Google Photos? Photos already uploaded stay there.")) gpPost("disconnect", {}, "Disconnected"); });
+}
+loaders.google = () => { loadStatus(); loadGoogle(); };
 
 // ---- quarantine ---------------------------------------------------------------------
 const GROUPS = new Map();   // group id -> { g, ticked:Set, verified:null|{...}, msg }
@@ -450,12 +551,14 @@ function renderGroup(id) {
       crc = x.problem && !x.crc32 ? `<span class="crc badv">${esc(x.problem)}</span>`
         : `<span class="crc ${isKeep ? "" : ok ? "good" : "badv"}">${esc(x.crc32 || "")} ${isKeep ? "" : ok ? "✓ same" : "✗ different"}</span>`;
     } else if (isKeep) crc = `<span class="tag">Stays</span>`;
-    return `<label class="gfile ${isKeep ? "keep" : ""}"><input type="checkbox" data-rel="${esc(f.rel)}" ${s.ticked.has(f.rel) ? "checked" : ""}>
+    const thumb = showThumbs() ? thumbImg(`api/thumb?rel=${encodeURIComponent(f.rel)}`) : "";
+    return `<label class="gfile ${isKeep ? "keep" : ""} ${thumb ? "has-thumb" : ""}"><input type="checkbox" data-rel="${esc(f.rel)}" ${s.ticked.has(f.rel) ? "checked" : ""}>${thumb}
       <span class="path">${esc(f.rel)}<span class="sm">${esc(fmtDate(f.taken))} · ${(f.size / 1048576).toFixed(1)} MB</span></span>${crc}</label>`;
   }).join("");
   const keepNote = n && keep ? `Keeping <code>${esc(keep.rel)}</code>` : "Tick the copies to move to quarantine.";
+  const keepPic = keep ? `<div class="keeppic">${bigImg(`api/thumb?rel=${encodeURIComponent(keep.rel)}`)}<span class="sm">The copy that stays<br><code>${esc(keep.rel)}</code></span></div>` : "";
   el.innerHTML = `<div class="ghead"><span>${g.count} identical copies</span><span class="sm hint" style="margin:0">${(g.size / 1048576).toFixed(1)} MB each</span></div>
-    ${rows}
+    ${keepPic}${rows}
     <p class="hint">${keepNote}${n === g.count ? ` <b class="danger">Untick at least one — a copy has to stay.</b>` : ""}</p>
     ${s.msg ? `<div class="gmsg ${s.msg.cls}">${esc(s.msg.text)}</div>` : ""}
     <div class="gactions">
@@ -463,6 +566,7 @@ function renderGroup(id) {
       <button class="ghost" data-act="verify" ${n && n < g.count ? "" : "disabled"}>Check checksums</button>
       <button class="primary" data-act="move" ${v && v.all_match && n && n < g.count ? "" : "disabled"}>Move ${n || ""} to quarantine</button>
     </div>`;
+  wireImages(el);
   el.querySelectorAll("input[type=checkbox]").forEach((cb) => cb.addEventListener("change", () => {
     cb.checked ? s.ticked.add(cb.dataset.rel) : s.ticked.delete(cb.dataset.rel);
     s.verified = null; s.msg = null;           // any change in the selection needs a fresh check
@@ -495,8 +599,9 @@ async function loadQuarantine() {
   try { q = await api("quarantine"); } catch (e) { $("#qlist").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
   if (!q.items.length) { $("#qlist").innerHTML = `<div class="empty">Nothing in quarantine.</div>`; return; }
   $("#qlist").innerHTML = `<div class="card"><p class="hint" style="margin-top:0">${plural(q.files, "file", "files")} in <code>${esc(q.folder || "")}</code> · ${fmtSize(q.bytes / 1073741824)}. Delete them yourself from the NAS when you're sure; use “Clear emptied” afterwards to tidy this list.</p>` +
-    q.items.map((i) => `<div class="qitem"><div><code>${esc(i.rel)}</code><span class="sm">Copy of ${esc(i.keep_rel)} · CRC32 ${esc(i.crc32 || "")}${i.present ? "" : " · no longer in the quarantine folder"}</span></div>
+    q.items.map((i) => `<div class="qitem"><div class="lead">${i.present && showThumbs() ? thumbImg(`api/thumb?q=${i.id}`) : ""}<div><code>${esc(i.rel)}</code><span class="sm">Copy of ${esc(i.keep_rel)} · CRC32 ${esc(i.crc32 || "")}${i.present ? "" : " · no longer in the quarantine folder"}</span></div></div>
       <button class="ghost" data-restore="${i.id}" ${i.present ? "" : "disabled"}>Restore</button></div>`).join("") + `</div>`;
+  wireImages($("#qlist"));
   $("#qlist").querySelectorAll("[data-restore]").forEach((b) => b.addEventListener("click", async () => {
     b.disabled = true;
     try { await api("quarantine/restore", { method: "POST", body: { id: Number(b.dataset.restore) } }); toast("Put back where it was"); loadDups(); }
@@ -512,7 +617,7 @@ loaders.quarantine = () => { loadStatus(); loadDups(); loadQuarantine(); };
 (function init() {
   let tab = "library";
   try { tab = localStorage.getItem("pm-tab") || "library"; } catch { /* ignore */ }
-  if (!["library", "develop", "quarantine", "storage"].includes(tab)) tab = "library";
+  if (!["library", "develop", "quarantine", "google", "storage"].includes(tab)) tab = "library";
   showTab(tab);
   loadStatus();
   if (tab !== "library") loadReport();

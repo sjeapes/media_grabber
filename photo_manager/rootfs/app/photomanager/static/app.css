@@ -167,3 +167,21 @@ ul.fails .sm { display: block; color: var(--muted); font-size: 12px; }
 .qitem .sm { display: block; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .qitem > div { min-width: 0; overflow-wrap: anywhere; font-size: 13.5px; }
 .danger { color: var(--bad); }
+
+/* thumbnails */
+.inline { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); cursor: pointer; }
+.inline input { accent-color: var(--accent); }
+.gfile { grid-template-columns: auto 1fr auto; }
+.gfile.has-thumb { grid-template-columns: auto auto 1fr auto; }
+.thumb { width: 64px; height: 48px; object-fit: cover; border-radius: 6px; background: var(--chip); cursor: zoom-in; display: block; }
+.thumb.none { cursor: default; }
+.keeppic { display: flex; gap: 12px; align-items: center; margin: 4px 0 8px; }
+.keeppic img { max-width: 200px; max-height: 150px; border-radius: 8px; background: var(--chip); cursor: zoom-in; object-fit: contain; }
+.keeppic .sm { font-size: 12.5px; color: var(--muted); }
+#lightbox { cursor: zoom-out; }
+#lightbox img { max-width: min(96vw, 960px); max-height: 92vh; border-radius: 8px; background: #000; }
+.qitem .thumb { margin-right: 10px; flex: none; }
+.qitem .lead { display: flex; align-items: center; min-width: 0; }
+.steps { margin: 8px 0 0; padding-left: 20px; font-size: 13.5px; }
+.steps li { margin: 4px 0; }
+.linkbox { overflow-wrap: anywhere; font-size: 12.5px; }

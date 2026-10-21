@@ -21,6 +21,7 @@
   <button data-tab="library" class="on">Library</button>
   <button data-tab="develop">Develop</button>
   <button data-tab="quarantine">Quarantine</button>
+  <button data-tab="google">Google Photos</button>
   <button data-tab="storage">Storage</button>
 </nav>
 
@@ -38,12 +39,15 @@
 
   <!-- Quarantine -->
   <section id="tab-quarantine" class="tab">
-    <div class="toolbar"><h2>Duplicate photos</h2><button id="dups-reload" class="ghost">Refresh</button></div>
+    <div class="toolbar"><h2>Duplicate photos</h2><div class="row"><label class="inline"><input type="checkbox" id="show-thumbs"> Thumbnails</label><button id="dups-reload" class="ghost">Refresh</button></div></div>
     <p class="hint" style="margin-top:0">Tick the copies to move to quarantine. At least one copy must stay unticked. Before anything moves, the files are read again and their CRC32 checksums are compared — the move only goes ahead if they all match. Nothing is deleted.</p>
     <div id="dups"></div>
     <div class="toolbar" style="margin-top:20px"><h2>In quarantine</h2><button id="q-forget" class="ghost">Clear emptied</button></div>
     <div id="qlist"></div>
   </section>
+
+  <!-- Google Photos -->
+  <section id="tab-google" class="tab"><div id="google"><div class="empty"><span class="spinner"></span></div></div></section>
 
   <!-- Storage -->
   <section id="tab-storage" class="tab">
@@ -67,6 +71,7 @@
   </div>
 </div>
 
+<div id="lightbox" class="overlay" hidden><img id="lightbox-img" alt=""></div>
 <div id="toast" class="toast" hidden></div>
 <script src="static/app.js"></script>
 </body>

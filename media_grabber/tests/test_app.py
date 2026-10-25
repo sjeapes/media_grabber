@@ -295,7 +295,9 @@ def test_pvr_add_list_delete_run(env, monkeypatch):
     item = c.post("/api/pvr", json={"query": "Hey Duggee", "name": "Hey Duggee"}).json
     assert [i["id"] for i in c.get("/api/pvr").json] == [item["id"]]
     svc.cfg.options["iplayer_requires_uk_vpn"] = False
-    assert c.post("/api/pvr/run").json["queued"] == 1
+    assert svc.next_pvr is not None and svc.next_pvr <= time.time() + 1   # adding schedules a check now
+    assert c.post("/api/pvr/run").json["scheduled"]
+    assert svc.queue_pvr() == 1
     job = next(j for j in svc.jobs.jobs.values() if j["meta"].get("pvr") == item["id"])
     svc.storage.resolve()
     assert svc.build_cmd(job["spec"])[-2:] == ["--get", "Hey Duggee"]
@@ -361,3 +363,20 @@ def test_usage_scan_tree_and_summary(env, monkeypatch):
     # survives restart
     svc2 = Services(env["cfg"], mounts_file=str(env["mounts"]))
     assert svc2.usage.summary()["total"] == u["root"]["s"]
+
+
+def test_series_check_timer(env):
+    svc, c = env["svc"], env["svc"]
+    svc.next_pvr = None
+    assert svc.pvr_tick() == "waiting"
+    svc.dl.pvr_add("Hey Duggee", "Hey Duggee")
+    svc.check_series_soon()
+    assert svc.pvr_tick() == "postponed"                       # VPN not set up
+    assert 290 < svc.next_pvr - time.time() <= 300           # retry in 5 min, not 4 h
+    svc.cfg.options["iplayer_requires_uk_vpn"] = False
+    svc.next_pvr = time.time() - 1
+    assert svc.pvr_tick() == "ran"
+    assert svc.next_pvr - time.time() > 3 * 3600             # then back to the normal interval
+    assert any(j["meta"].get("pvr") for j in svc.jobs.jobs.values())
+    args = (STUBS / "get_iplayer.last").read_text()
+    assert "--get" in args or "--refresh" in args

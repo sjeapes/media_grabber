@@ -40,6 +40,7 @@ function showTab(name) {
   document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("on", t.id === "tab-" + name));
   try { localStorage.setItem("mg-tab", name); } catch { /* storage may be blocked */ }
+  if (name !== "browse") browserPause();
   loaders[name] && loaders[name]();
 }
 document.querySelectorAll(".tabs button").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
@@ -190,7 +191,7 @@ $("#pvr-form").addEventListener("submit", async (e) => {
     $("#pvr-q").value = ""; loadPvr();
   } catch (err) { toast(err.message); }
 });
-$("#pvr-run").addEventListener("click", async () => { try { const r = await api("pvr/run", { method: "POST" }); toast(`Queued ${r.queued} series check(s)`); } catch (e) { toast(e.message); } });
+$("#pvr-run").addEventListener("click", async () => { try { const r = await api("pvr/run", { method: "POST" }); toast(r.running ? "A series check is already running" : "Checking for new episodes — refreshing the iPlayer list first"); } catch (e) { toast(e.message); } });
 loaders.series = loadPvr;
 
 // ---- library ------------------------------------------------------
@@ -363,6 +364,150 @@ $("#scan-go").addEventListener("click", async () => {
   setTimeout(loadUsage, 300);
 });
 loaders.space = loadUsage;
+
+// ---- browse (remote browser over the UK VPN) -----------------------------
+const B = { on: false, seq: 0, loop: 0, url: "", ctx: null, chain: Promise.resolve(), down: null, lastMove: 0, wheel: null };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function bMsg(t) { const m = $("#screen-msg"); m.innerHTML = t; m.hidden = !t; }
+function bSize() { const r = $("#screen-wrap").getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height) }; }
+function bSend(o) { // keep input events in order
+  B.chain = B.chain.then(() => fetch("api/browser/input", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(o) })).catch(() => {});
+}
+async function browserOpen() {
+  if (B.on) return;
+  B.on = true;
+  if (!B.seq) bMsg(`<span class="spinner"></span> Starting the browser through the UK VPN…`);
+  try { await api("browser/start", { method: "POST", body: bSize() }); }
+  catch (e) { bMsg(esc(e.message)); B.on = false; return; }
+  frameLoop(++B.loop); stateLoop(B.loop);
+}
+function browserPause() { B.on = false; }
+async function frameLoop(id) {
+  while (B.on && id === B.loop) {
+    try {
+      const r = await fetch("api/browser/frame?after=" + B.seq);
+      if (r.status === 200) {
+        B.seq = +r.headers.get("X-Seq") || B.seq + 1;
+        const url = URL.createObjectURL(await r.blob());
+        const img = $("#screen"), old = img.src;
+        img.src = url; bMsg("");
+        if (old.startsWith("blob:")) setTimeout(() => URL.revokeObjectURL(old), 1000);
+      } else if (r.status !== 204) { await sleep(1500); B.on && api("browser/start", { method: "POST", body: bSize() }).catch((e) => bMsg(esc(e.message))); }
+    } catch { await sleep(1500); }
+  }
+}
+async function stateLoop(id) {
+  while (B.on && id === B.loop) {
+    try {
+      const st = await api("browser/state");
+      if (!st.running && st.error) bMsg(esc(st.error));
+      $("#screen-load").hidden = !st.loading;
+      if (document.activeElement !== $("#addr")) $("#addr").value = st.url && st.url !== "about:blank" ? st.url : "";
+      if (st.url !== B.url && !st.loading) { B.url = st.url; refreshContext(); }
+    } catch { /* keep trying */ }
+    await sleep(1200);
+  }
+}
+async function refreshContext() {
+  try { B.ctx = await api("browser/context"); } catch { B.ctx = null; }
+  const c = B.ctx || {};
+  $("#add-prog").disabled = !c.can_add_programme;
+  $("#add-series").disabled = !c.can_add_series;
+  $("#add-prog").title = c.can_add_programme ? `Download “${c.title}”` : "Open an episode page to download it";
+  $("#add-series").title = c.can_add_series ? `Record “${c.programme_name}”` : "Open a programme or episode page";
+}
+function bPoint(e) { // map a tap on the (letterboxed) picture to page coordinates
+  const img = $("#screen"), r = img.getBoundingClientRect();
+  const nw = img.naturalWidth || r.width, nh = img.naturalHeight || r.height;
+  const k = Math.min(r.width / nw, r.height / nh);
+  const ox = (r.width - nw * k) / 2, oy = (r.height - nh * k) / 2;
+  const clamp = (v, max) => Math.max(0, Math.min(max - 1, v));
+  return { x: Math.round(clamp((e.clientX - r.left - ox) / k, nw)), y: Math.round(clamp((e.clientY - r.top - oy) / k, nh)) };
+}
+const scr = $("#screen");
+scr.addEventListener("contextmenu", (e) => e.preventDefault());
+scr.addEventListener("pointerdown", (e) => {
+  e.preventDefault(); scr.focus({ preventScroll: true });
+  B.down = { type: e.pointerType, x: e.clientX, y: e.clientY, lx: e.clientX, ly: e.clientY, moved: false };
+  scr.setPointerCapture(e.pointerId);
+  if (e.pointerType === "mouse") bSend({ type: "down", ...bPoint(e), button: ["left", "middle", "right"][e.button] || "left" });
+});
+scr.addEventListener("pointermove", (e) => {
+  const d = B.down;
+  if (d && d.type !== "mouse") { // touch/pen drag = scroll
+    const dx = d.lx - e.clientX, dy = d.ly - e.clientY;
+    if (!d.moved && Math.hypot(e.clientX - d.x, e.clientY - d.y) < 8) return;
+    d.moved = true; d.lx = e.clientX; d.ly = e.clientY;
+    const p = bPoint(e), w = B.wheel || (B.wheel = { ...p, dx: 0, dy: 0 });
+    w.dx += dx * 1.5; w.dy += dy * 1.5;
+    if (!B.wheelT) B.wheelT = setTimeout(() => { bSend({ type: "wheel", ...B.wheel }); B.wheel = null; B.wheelT = null; }, 60);
+    return;
+  }
+  const now = Date.now();
+  if (now - B.lastMove > 120) { B.lastMove = now; bSend({ type: "move", ...bPoint(e) }); }
+});
+scr.addEventListener("pointerup", (e) => {
+  const d = B.down; B.down = null;
+  if (!d) return;
+  if (d.type === "mouse") bSend({ type: "up", ...bPoint(e), button: ["left", "middle", "right"][e.button] || "left" });
+  else if (!d.moved) bSend({ type: "click", ...bPoint(e) });
+});
+scr.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const k = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 400 : 1;
+  bSend({ type: "wheel", ...bPoint(e), dx: e.deltaX * k, dy: e.deltaY * k });
+}, { passive: false });
+const SPECIAL = new Set(["Enter", "Backspace", "Tab", "Escape", "Delete", "Home", "End", "PageUp", "PageDown", "ArrowLeft", "ArrowUp", "ArrowRight", "ArrowDown"]);
+function bKey(e) {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (SPECIAL.has(e.key)) { e.preventDefault(); bSend({ type: "key", key: e.key }); }
+  else if (e.key.length === 1 && e.target === scr) { e.preventDefault(); bSend({ type: "text", text: e.key }); }
+}
+scr.addEventListener("keydown", bKey);
+const kbd = $("#kbd"); // phones: a hidden input brings up the on-screen keyboard
+$("#kbd-btn").addEventListener("click", () => { kbd.value = ""; kbd.focus(); });
+kbd.addEventListener("keydown", bKey);
+kbd.addEventListener("input", (e) => { if (e.data) bSend({ type: "text", text: e.data }); kbd.value = ""; });
+document.querySelectorAll("[data-nav]").forEach((b) => b.addEventListener("click", async () => {
+  try { await api("browser/nav", { method: "POST", body: { action: b.dataset.nav } }); } catch (e) { toast(e.message); }
+}));
+$("#addr-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const v = $("#addr").value.trim(); $("#addr").blur();
+  try { await api("browser/nav", { method: "POST", body: { url: v } }); } catch (err) { toast(err.message); }
+});
+$("#add-prog").addEventListener("click", async () => {
+  try { const r = await api("browser/add", { method: "POST", body: { mode: "programme" } }); toast(r.message); loadStatus(); }
+  catch (e) { toast(e.message); }
+});
+$("#add-series").addEventListener("click", async () => {
+  await refreshContext();
+  const c = B.ctx || {};
+  if (!c.can_add_series) return toast("Open a programme or episode page first");
+  $("#series-name").value = c.programme_name || "";
+  $("#series-existing-label").textContent = c.series_pid ? "Download all episodes available now" : "Download this episode now";
+  $("#series-dlg").showModal();
+});
+$("#series-cancel").addEventListener("click", () => $("#series-dlg").close());
+$("#series-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    const r = await api("browser/add", { method: "POST", body: {
+      mode: "series", name: $("#series-name").value, download_existing: $("#series-existing").checked,
+      record_new: $("#series-new").checked, subtitles: $("#series-subs").checked } });
+    $("#series-dlg").close(); toast(r.message, 6000); loadStatus();
+  } catch (err) { toast(err.message, 6000); }
+});
+let resizeT;
+new ResizeObserver(() => {
+  clearTimeout(resizeT);
+  resizeT = setTimeout(() => { if (B.on) api("browser/resize", { method: "POST", body: bSize() }).catch(() => {}); }, 400);
+}).observe($("#screen-wrap"));
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) browserPause();
+  else if ($("#tab-browse").classList.contains("on")) browserOpen();
+});
+loaders.browse = browserOpen;
 
 // ---- VPN ------------------------------------------------------------
 function renderVpn(v) {

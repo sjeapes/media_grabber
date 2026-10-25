@@ -14,7 +14,9 @@ RUN apt-get update \
       ffmpeg atomicparsley \
       perl libwww-perl liblwp-protocol-https-perl libmojolicious-perl \
       libxml-libxml-perl libcgi-pm-perl libhtml-parser-perl \
- && rm -rf /var/lib/apt/lists/*
+      chromium fonts-liberation fonts-noto-core \
+ && rm -rf /var/lib/apt/lists/* \
+ && test -x /usr/bin/chromium
 
 # Arch-specific binary names
 RUN case "${BUILD_ARCH}" in \

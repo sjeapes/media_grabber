@@ -16,6 +16,7 @@ def main():
     svc.start()
 
     def stop(*_):
+        svc.browser.stop()
         svc.vpn.shutdown()
         sys.exit(0)
 
@@ -24,7 +25,7 @@ def main():
     logging.getLogger("mediagrabber").info(
         "Media Grabber listening on :%d — storage: %s", cfg.listen_port,
         loc["path"] if not loc["error"] else loc["error"])
-    serve(create_app(svc), host="0.0.0.0", port=cfg.listen_port, threads=8, ident=None)
+    serve(create_app(svc), host="0.0.0.0", port=cfg.listen_port, threads=16, ident=None)
 
 
 if __name__ == "__main__":

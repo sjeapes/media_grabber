@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.0
+
+- New **Browse** tab: BBC iPlayer in a browser that runs inside the add-on and
+  goes through the UK VPN, so your own device doesn't need a VPN. Tap, scroll,
+  type, back/forward, address bar (type a programme name to search iPlayer).
+- **+ Programme** queues the episode on screen; **+ Series** downloads every
+  episode available now and records new ones (name pre-filled, editable).
+- The browser only runs while the tab is open and stops after 10 idle minutes.
+- Series recordings: adding one checks for episodes straight away; "Check now"
+  refreshes the iPlayer list first; a check skipped because the VPN was down is
+  retried after 5 minutes instead of 4 hours.
+
 ## 0.3.1
 
 - Failed downloads are retried automatically (up to 3 attempts, after 1 and

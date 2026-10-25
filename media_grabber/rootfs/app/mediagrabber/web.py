@@ -12,6 +12,7 @@ from pathlib import Path
 from flask import Flask, abort, jsonify, request, send_from_directory
 
 from .downloads import Downloads
+from .browser import RemoteBrowser, derive_context
 from .ha import HAClient
 from .jobs import JobQueue
 from .storage import Storage, disk
@@ -33,7 +34,9 @@ class Services:
         self.versions = {}
         self.jobs = JobQueue(cfg, self.prepare, self.on_finish)
         self.usage = UsageScanner(cfg, on_done=self.publish)
+        self.browser = RemoteBrowser(cfg, self.vpn)
         self.next_pvr = None
+        self.pvr_running = False
 
     # --- checks -----------------------------------------------------------
     def iplayer_block_reason(self) -> str | None:
@@ -172,19 +175,50 @@ class Services:
             self.dl.pvr_mark_run(ids)
         return n
 
+    def check_series_soon(self, delay: float = 0):
+        """Run a series check (index refresh + queue) shortly, instead of waiting for the timer."""
+        self.next_pvr = min(self.next_pvr or float("inf"), time.time() + delay)
+
     def pvr_loop(self):
-        self.next_pvr = time.time() + 300  # first run five minutes after start-up
+        if self.next_pvr is None:
+            self.next_pvr = time.time() + 300  # first run five minutes after start-up
         while True:
-            time.sleep(30)
-            if time.time() < self.next_pvr:
-                continue
-            self.next_pvr = time.time() + 3600 * int(self.cfg.opt("pvr_interval_hours"))
-            if self.iplayer_block_reason():
-                log.info("PVR skipped: %s", self.iplayer_block_reason())
-                continue
-            self.dl.refresh_index()
-            if self.dl.pvr_list():
-                log.info("PVR queued %d series checks", self.queue_pvr())
+            time.sleep(10)
+            self.pvr_tick()
+
+    def pvr_tick(self) -> str:
+        """One pass of the series-check timer. Returns what it did (for logs/tests)."""
+        if self.next_pvr is None or time.time() < self.next_pvr:
+            return "waiting"
+        reason = self.iplayer_block_reason()
+        if reason:
+            log.info("Series check postponed 5 min: %s", reason)
+            self.next_pvr = time.time() + 300   # try again soon, not in 4 hours
+            return "postponed"
+        self.next_pvr = time.time() + 3600 * int(self.cfg.opt("pvr_interval_hours"))
+        self.pvr_running = True
+        try:
+            self.dl.refresh_index()             # find episodes released since last time
+            n = self.queue_pvr() if self.dl.pvr_list() else 0
+            if n:
+                log.info("Series check queued %d recordings", n)
+        finally:
+            self.pvr_running = False
+        return "ran"
+
+    def queue_iplayer(self, target: str, title: str, series=False, subtitles=False):
+        """Queue an iPlayer/Sounds download. Returns (job, error)."""
+        try:
+            target = self.dl.normalise_iplayer_target(target)
+        except ValueError as exc:
+            return None, str(exc)
+        if self.jobs.find_active("iplayer", target):
+            return None, "Already in the queue"
+        job = self.jobs.add("iplayer", (title or target)[:200],
+                            {"type": "iplayer", "target": target, "series": bool(series),
+                             "subtitles": bool(subtitles)},
+                            {"key": target, "series": bool(series)})
+        return job, None
 
     def update_tools(self):
         if self.cfg.opt("auto_update_tools") and shutil.which("pip"):
@@ -353,17 +387,10 @@ def create_app(svc: Services) -> Flask:
     @app.post("/api/iplayer/download")
     def iplayer_download():
         b = body()
-        try:
-            target = svc.dl.normalise_iplayer_target(b.get("target", ""))
-        except ValueError as exc:
-            return bad(str(exc))
-        if svc.jobs.find_active("iplayer", target):
-            return bad("Already in the queue", 409)
-        title = (b.get("title") or target)[:200]
-        job = svc.jobs.add("iplayer", title, {"type": "iplayer", "target": target,
-                                              "series": bool(b.get("series")),
-                                              "subtitles": bool(b.get("subtitles"))},
-                           {"key": target, "series": bool(b.get("series"))})
+        job, err = svc.queue_iplayer(b.get("target", ""), b.get("title"), b.get("series"),
+                                     b.get("subtitles"))
+        if err:
+            return bad(err, 409 if err == "Already in the queue" else 400)
         return jsonify(svc.jobs.public(job)), 201
 
     # --- links (yt-dlp) -----------------------------------------------------
@@ -414,6 +441,7 @@ def create_app(svc: Services) -> Flask:
                                   bool(b.get("subtitles")))
         except ValueError as exc:
             return bad(str(exc))
+        svc.check_series_soon()   # look for episodes now rather than at the next 4-hourly run
         return jsonify(item), 201
 
     @app.delete("/api/pvr/<pid>")
@@ -425,7 +453,124 @@ def create_app(svc: Services) -> Flask:
         reason = svc.iplayer_block_reason()
         if reason:
             return bad(reason, 409)
-        return jsonify({"queued": svc.queue_pvr()})
+        svc.check_series_soon()   # refreshes the iPlayer list first, then queues
+        return jsonify({"scheduled": True, "running": svc.pvr_running})
+
+    # --- remote browser (Browse tab) --------------------------------------
+    def browser_call(fn, *a, **kw):
+        try:
+            return None, fn(*a, **kw)
+        except (ConnectionError, TimeoutError, RuntimeError, ValueError) as exc:
+            return str(exc), None
+
+    @app.post("/api/browser/start")
+    def browser_start():
+        b = body()
+        err = svc.browser.ensure(b.get("w"), b.get("h"))
+        if err:
+            return bad(err, 409)
+        return jsonify(svc.browser.state())
+
+    @app.get("/api/browser/state")
+    def browser_state():
+        svc.browser.touch()
+        return jsonify(svc.browser.state())
+
+    @app.get("/api/browser/frame")
+    def browser_frame():
+        try:
+            after = int(request.args.get("after", 0))
+        except ValueError:
+            after = 0
+        got = svc.browser.get_frame(after, timeout=12) if svc.browser.alive() else None
+        if not got:
+            return ("", 204)
+        seq, data = got
+        resp = app.response_class(data, mimetype="image/jpeg")
+        resp.headers["X-Seq"] = str(seq)
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    @app.post("/api/browser/resize")
+    def browser_resize():
+        b = body()
+        err, size = browser_call(svc.browser.resize, b.get("w", 1280), b.get("h", 800))
+        return bad(err, 409) if err else jsonify({"size": list(size)})
+
+    @app.post("/api/browser/nav")
+    def browser_nav():
+        b = body()
+        action = b.get("action")
+        br = svc.browser
+        fn = {"back": lambda: br.history(-1), "forward": lambda: br.history(1),
+              "reload": br.reload, "home": lambda: br.navigate(br.home)}.get(action)
+        err, _ = browser_call(fn) if fn else browser_call(br.navigate, str(b.get("url", "")))
+        return bad(err, 409) if err else jsonify(br.state())
+
+    @app.post("/api/browser/input")
+    def browser_input():
+        b = body()
+        t = b.get("type")
+        br = svc.browser
+        x, y = float(b.get("x", 0)), float(b.get("y", 0))
+        if t in ("down", "up", "move", "click"):
+            err, _ = browser_call(br.mouse, t, x, y, b.get("button", "left"))
+        elif t == "wheel":
+            err, _ = browser_call(br.wheel, x, y, float(b.get("dx", 0)), float(b.get("dy", 0)))
+        elif t == "key":
+            err, _ = browser_call(br.key, str(b.get("key", "")))
+        elif t == "text":
+            err, _ = browser_call(br.text, str(b.get("text", "")))
+        else:
+            err = "unknown input"
+        return bad(err, 409) if err else jsonify({"ok": True})
+
+    @app.get("/api/browser/context")
+    def browser_context():
+        err, info = browser_call(svc.browser.page_info)
+        if err:
+            return bad(err, 409)
+        return jsonify(derive_context(info))
+
+    @app.post("/api/browser/add")
+    def browser_add():
+        b = body()
+        err, info = browser_call(svc.browser.page_info)
+        if err:
+            return bad(err, 409)
+        ctx = derive_context(info)
+        mode = b.get("mode")
+        subs = bool(b.get("subtitles"))
+        done = []
+        if mode == "programme":
+            if not ctx["can_add_programme"]:
+                return bad("Open an episode page first")
+            job, e = svc.queue_iplayer(ctx["episode_target"], ctx["title"], subtitles=subs)
+            if e:
+                return bad(e, 409)
+            return jsonify({"message": f"Queued “{job['title']}”", "context": ctx}), 201
+        if mode != "series":
+            return bad("mode must be programme or series")
+        name = str(b.get("name") or ctx["programme_name"]).strip()
+        if len(name) < 3:
+            return bad("Enter the programme name to record")
+        if b.get("download_existing", True):
+            if ctx["series_pid"]:
+                job, e = svc.queue_iplayer(ctx["series_pid"], f"All episodes: {name}", series=True,
+                                           subtitles=subs)
+                done.append("all available episodes queued" if job else e)
+            elif ctx["episode_target"]:
+                job, e = svc.queue_iplayer(ctx["episode_target"], ctx["title"], subtitles=subs)
+                done.append("this episode queued" if job else e)
+        if b.get("record_new", True):
+            existing = [p for p in svc.dl.pvr_list() if p["query"].lower() == name.lower()]
+            if existing:
+                done.append("already recording new episodes")
+            else:
+                svc.dl.pvr_add(name, name, ctx["type"], subs)
+                done.append("new episodes will be recorded")
+                svc.check_series_soon(60)
+        return jsonify({"message": f"{name}: " + "; ".join(done), "context": ctx}), 201
 
     # --- VPN ------------------------------------------------------------
     @app.get("/api/vpn")

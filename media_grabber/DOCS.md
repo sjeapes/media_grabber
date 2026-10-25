@@ -25,6 +25,21 @@ other add-ons, the web UI and NAS traffic all use your normal connection. No
 extra privileges are needed. If the tunnel is down, or its exit isn't in the
 UK, iPlayer jobs are refused rather than leaking out on your home IP.
 
+## Browse tab
+
+Browse BBC iPlayer from any device without a VPN: a Chromium browser runs inside
+the add-on, routed through the UK tunnel, and the tab shows its screen. Tap or
+click, scroll, type (⌨ opens the keyboard on phones), and use the address bar —
+type a programme name to search iPlayer.
+
+- **+ Programme** — queue the episode you're looking at.
+- **+ Series** — download all episodes available now and record new ones as
+  they're released (the programme name is pre-filled; edit it if needed).
+
+Video playback isn't available in this view; it's for finding programmes. The
+browser starts when you open the tab and stops after 10 idle minutes (it uses
+roughly 300–500 MB of memory while running).
+
 ## Storage safety
 
 - Media Grabber never falls back from a missing NAS to Home Assistant's disk

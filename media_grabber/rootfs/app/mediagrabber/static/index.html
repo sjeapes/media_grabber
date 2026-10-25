@@ -16,6 +16,7 @@
 </header>
 
 <nav class="tabs" role="tablist">
+  <button data-tab="browse">Browse</button>
   <button data-tab="iplayer" class="on">iPlayer</button>
   <button data-tab="links">Links</button>
   <button data-tab="queue">Queue <span class="badge" id="qbadge" hidden></span></button>
@@ -28,6 +29,50 @@
 
 <main>
   <div id="banner" class="banner" hidden></div>
+
+  <!-- Browse: remote browser through the UK VPN -->
+  <section id="tab-browse" class="tab">
+    <div class="bbar">
+      <div class="bnav">
+        <button class="ghost icon" data-nav="back" title="Back" aria-label="Back">‹</button>
+        <button class="ghost icon" data-nav="forward" title="Forward" aria-label="Forward">›</button>
+        <button class="ghost icon" data-nav="reload" title="Reload" aria-label="Reload">↻</button>
+        <button class="ghost icon" data-nav="home" title="iPlayer home" aria-label="iPlayer home">⌂</button>
+      </div>
+      <form id="addr-form" class="baddr">
+        <input id="addr" placeholder="Search iPlayer or enter a BBC address" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Address">
+      </form>
+      <div class="badd">
+        <button id="add-prog" class="primary" disabled title="Download the episode on screen">+ Programme</button>
+        <button id="add-series" class="ghost" disabled title="Download all episodes and record new ones">+ Series</button>
+        <button id="kbd-btn" class="ghost icon" title="Keyboard" aria-label="Show keyboard">⌨</button>
+      </div>
+    </div>
+    <div id="screen-wrap" class="screen-wrap">
+      <img id="screen" alt="BBC iPlayer, shown through the UK VPN" draggable="false" tabindex="0">
+      <div id="screen-msg" class="screen-msg"></div>
+      <div id="screen-load" class="screen-load" hidden></div>
+    </div>
+    <p class="hint">Shown from a browser running inside Media Grabber over the UK VPN — your device doesn't need a VPN. Playback isn't available here; use it to find programmes, then press + Programme or + Series.</p>
+    <input id="kbd" class="kbd" autocomplete="off" autocapitalize="off" spellcheck="false" aria-hidden="true">
+    <dialog id="series-dlg" class="dlg">
+      <form method="dialog" id="series-form">
+        <h2>Record a series</h2>
+        <label for="series-name">Programme name</label>
+        <input id="series-name" required minlength="3">
+        <p class="hint" style="margin-top:4px">New episodes whose title matches this name are recorded automatically.</p>
+        <div class="checks col">
+          <label><input type="checkbox" id="series-existing" checked> <span id="series-existing-label">Download all episodes available now</span></label>
+          <label><input type="checkbox" id="series-new" checked> Record new episodes as they're released</label>
+          <label><input type="checkbox" id="series-subs"> Subtitles</label>
+        </div>
+        <div class="row end">
+          <button type="button" class="ghost" id="series-cancel">Cancel</button>
+          <button class="primary" value="ok">Add series</button>
+        </div>
+      </form>
+    </dialog>
+  </section>
 
   <!-- iPlayer -->
   <section id="tab-iplayer" class="tab on">

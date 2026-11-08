@@ -141,8 +141,9 @@ def test_browse_click_add_programme_and_series(live):
     assert "new episodes will be recorded" in r.json["message"]
     specs = [j["spec"] for j in svc.jobs.jobs.values()]
     assert {"type": "iplayer", "target": "https://www.bbc.co.uk/iplayer/episode/m001abcd",
-            "series": False, "subtitles": False} in specs
-    assert {"type": "iplayer", "target": "m0012345", "series": True, "subtitles": False} in specs
+            "series": False, "subtitles": False, "force": False} in specs
+    assert {"type": "iplayer", "target": "m0012345", "series": True, "subtitles": False,
+            "force": False} in specs
     assert [p["query"] for p in svc.dl.pvr_list()] == ["The Celebrity Traitors"]
     r = c.post("/api/browser/add", json={"mode": "series", "name": "the celebrity traitors",
                                           "download_existing": False})

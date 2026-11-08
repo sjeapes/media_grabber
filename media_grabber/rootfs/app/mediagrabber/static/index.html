@@ -90,6 +90,7 @@
       <div class="checks">
         <label><input type="checkbox" id="pid-series"> Whole series / all episodes</label>
         <label><input type="checkbox" id="pid-subs"> Subtitles</label>
+        <label title="Uses get_iplayer --force"><input type="checkbox" id="pid-force"> Force — download again even if already downloaded</label>
       </div>
     </form>
     <div id="index-note" class="note"></div>
@@ -107,6 +108,7 @@
       <div class="checks">
         <label><input type="checkbox" id="link-audio"> Audio only (MP3)</label>
         <label><input type="checkbox" id="link-playlist"> Whole playlist</label>
+        <label title="Ignores the already-downloaded record and overwrites existing files"><input type="checkbox" id="link-force"> Force — download again even if already downloaded</label>
       </div>
       <p class="hint">Uses yt-dlp. ITVX, Channel 4, My5 and STV use DRM and can't be downloaded.</p>
     </form>

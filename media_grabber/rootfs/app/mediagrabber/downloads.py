@@ -47,10 +47,13 @@ class Downloads:
             return t
         raise ValueError("Enter an iPlayer/Sounds link or an 8-character programme ID")
 
-    def iplayer_cmd(self, target: str, series: bool = False, subtitles: bool = False) -> list[str]:
+    def iplayer_cmd(self, target: str, series: bool = False, subtitles: bool = False,
+                    force: bool = False) -> list[str]:
         cmd = self._gip_base() + self._gip_output(subtitles) + ["--pid", target]
         if series:
             cmd.append("--pid-recursive")
+        if force:
+            cmd.append("--force")   # download again even if it's in get_iplayer's history
         return cmd
 
     def pvr_cmd(self, entry: dict) -> list[str]:
@@ -116,7 +119,7 @@ class Downloads:
             raise ValueError("That service uses DRM-protected streams, so it can't be downloaded")
         return url
 
-    def ytdlp_cmd(self, url: str, audio_only=False, playlist=False) -> list[str]:
+    def ytdlp_cmd(self, url: str, audio_only=False, playlist=False, force=False) -> list[str]:
         ydir = self.cfg.youtube_dir
         cmd = [self.cfg.yt_dlp, "--newline", "--no-colors", "--ignore-config",
                "--progress-template",
@@ -126,6 +129,9 @@ class Downloads:
                "--embed-metadata", "--embed-chapters", "--embed-thumbnail",
                "--download-archive", str(self.cfg.data_dir / "ytdlp-archive.txt"),
                "--yes-playlist" if playlist else "--no-playlist"]
+        if force:
+            # ignore the "already downloaded" record and overwrite any existing file
+            cmd += ["--no-download-archive", "--force-overwrites"]
         if audio_only:
             cmd += ["-x", "--audio-format", "mp3", "--audio-quality", "0"]
         else:

@@ -130,8 +130,8 @@ function renderResults(rows, q) {
 $("#pid-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   try {
-    await api("iplayer/download", { method: "POST", body: { target: $("#pid").value, series: $("#pid-series").checked, subtitles: $("#pid-subs").checked } });
-    $("#pid").value = ""; toast("Added to the queue"); loadStatus();
+    await api("iplayer/download", { method: "POST", body: { target: $("#pid").value, series: $("#pid-series").checked, subtitles: $("#pid-subs").checked, force: $("#pid-force").checked } });
+    $("#pid").value = ""; $("#pid-force").checked = false; toast("Added to the queue"); loadStatus();
   } catch (err) { toast(err.message); }
 });
 
@@ -139,8 +139,8 @@ $("#pid-form").addEventListener("submit", async (e) => {
 $("#link-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   try {
-    await api("link/download", { method: "POST", body: { url: $("#url").value, audio_only: $("#link-audio").checked, playlist: $("#link-playlist").checked } });
-    $("#url").value = ""; toast("Added to the queue"); loadStatus();
+    await api("link/download", { method: "POST", body: { url: $("#url").value, audio_only: $("#link-audio").checked, playlist: $("#link-playlist").checked, force: $("#link-force").checked } });
+    $("#url").value = ""; $("#link-force").checked = false; toast("Added to the queue"); loadStatus();
   } catch (err) { toast(err.message); }
 });
 
@@ -154,7 +154,7 @@ async function loadJobs() {
     const info = j.status === "running"
       ? [j.progress ? j.progress.toFixed(1) + "%" : "starting", j.speed, j.eta && "ETA " + j.eta].filter(Boolean).join(" · ")
       : j.status === "queued" ? (j.retry_at && j.retry_at > Date.now() / 1000 ? `retrying ${inFuture(j.retry_at)}` : "waiting") : `${j.status === "done" ? "finished" : j.status} ${ago(j.finished)}`;
-    const kind = j.kind === "iplayer" ? "iPlayer" : "Link";
+    const kind = (j.kind === "iplayer" ? "iPlayer" : "Link") + (j.meta && j.meta.force ? " · forced" : "");
     return `<div class="job">
       <div class="head"><div class="title">${esc(j.title)}</div><span class="st ${j.status}">${j.status}</span></div>
       <div class="info">${kind} · ${esc(info)}${j.attempt > 1 ? ` · attempt ${j.attempt} of 3` : ""}${j.files.length ? " · " + esc(j.files[j.files.length - 1].split("/").pop()) : ""}</div>

@@ -380,3 +380,31 @@ def test_series_check_timer(env):
     assert any(j["meta"].get("pvr") for j in svc.jobs.jobs.values())
     args = (STUBS / "get_iplayer.last").read_text()
     assert "--get" in args or "--refresh" in args
+
+
+def test_force_option_on_links(env):
+    svc, c = env["svc"], env["c"]
+    svc.cfg.options["iplayer_requires_uk_vpn"] = False
+    # iPlayer: --force only when asked
+    r = c.post("/api/iplayer/download", json={"target": "m001abcd"})
+    wait_job(c, r.json["id"])
+    assert "--force" not in (STUBS / "get_iplayer.last").read_text().split("\n")
+    r = c.post("/api/iplayer/download", json={"target": "m001abcd", "force": True})
+    assert r.status_code == 201 and r.json["meta"]["force"] is True
+    assert wait_job(c, r.json["id"])["status"] == "done"
+    assert "--force" in (STUBS / "get_iplayer.last").read_text().split("\n")
+    # yt-dlp: forced = no archive check + overwrite
+    r = c.post("/api/link/download", json={"url": "https://www.youtube.com/watch?v=abc"})
+    wait_job(c, r.json["id"])
+    args = (STUBS / "yt-dlp.last").read_text().split("\n")
+    assert "--download-archive" in args and "--force-overwrites" not in args
+    r = c.post("/api/link/download", json={"url": "https://www.youtube.com/watch?v=abc", "force": True})
+    wait_job(c, r.json["id"])
+    args = (STUBS / "yt-dlp.last").read_text().split("\n")
+    assert "--no-download-archive" in args and "--force-overwrites" in args
+    assert args[-2:] == ["--", "https://www.youtube.com/watch?v=abc"]
+    # force survives a retry (it's part of the job spec)
+    svc.jobs.retry_delays = (0, 0)
+    r = c.post("/api/iplayer/download", json={"target": "https://www.bbc.co.uk/iplayer/episode/FAILME", "force": True})
+    j = wait_job(c, r.json["id"])
+    assert j["attempt"] == 3 and "--force" in (STUBS / "get_iplayer.last").read_text().split("\n")

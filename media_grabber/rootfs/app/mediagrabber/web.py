@@ -85,12 +85,14 @@ class Services:
         t = spec["type"]
         if t == "iplayer":
             return self.dl.iplayer_cmd(spec["target"], series=spec.get("series", False),
-                                       subtitles=spec.get("subtitles", False))
+                                       subtitles=spec.get("subtitles", False),
+                                       force=spec.get("force", False))
         if t == "pvr":
             return self.dl.pvr_cmd(spec["entry"])
         if t == "link":
             return self.dl.ytdlp_cmd(spec["url"], audio_only=spec.get("audio_only", False),
-                                     playlist=spec.get("playlist", False))
+                                     playlist=spec.get("playlist", False),
+                                     force=spec.get("force", False))
         raise ValueError(f"unknown job type {t}")
 
     def prepare(self, job):
@@ -206,7 +208,7 @@ class Services:
             self.pvr_running = False
         return "ran"
 
-    def queue_iplayer(self, target: str, title: str, series=False, subtitles=False):
+    def queue_iplayer(self, target: str, title: str, series=False, subtitles=False, force=False):
         """Queue an iPlayer/Sounds download. Returns (job, error)."""
         try:
             target = self.dl.normalise_iplayer_target(target)
@@ -216,8 +218,8 @@ class Services:
             return None, "Already in the queue"
         job = self.jobs.add("iplayer", (title or target)[:200],
                             {"type": "iplayer", "target": target, "series": bool(series),
-                             "subtitles": bool(subtitles)},
-                            {"key": target, "series": bool(series)})
+                             "subtitles": bool(subtitles), "force": bool(force)},
+                            {"key": target, "series": bool(series), "force": bool(force)})
         return job, None
 
     def update_tools(self):
@@ -388,7 +390,7 @@ def create_app(svc: Services) -> Flask:
     def iplayer_download():
         b = body()
         job, err = svc.queue_iplayer(b.get("target", ""), b.get("title"), b.get("series"),
-                                     b.get("subtitles"))
+                                     b.get("subtitles"), b.get("force"))
         if err:
             return bad(err, 409 if err == "Already in the queue" else 400)
         return jsonify(svc.jobs.public(job)), 201
@@ -405,8 +407,10 @@ def create_app(svc: Services) -> Flask:
             return bad("Already in the queue", 409)
         job = svc.jobs.add("link", url, {"type": "link", "url": url,
                                          "audio_only": bool(b.get("audio_only")),
-                                         "playlist": bool(b.get("playlist"))},
-                           {"key": url, "audio_only": bool(b.get("audio_only"))})
+                                         "playlist": bool(b.get("playlist")),
+                                         "force": bool(b.get("force"))},
+                           {"key": url, "audio_only": bool(b.get("audio_only")),
+                            "force": bool(b.get("force"))})
         return jsonify(svc.jobs.public(job)), 201
 
     # --- queue ------------------------------------------------------------

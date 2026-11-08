@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1
+
+- **Force** option on the iPlayer link box and the Links box: downloads again
+  even if it was downloaded before (`get_iplayer --force`; for yt-dlp the
+  already-downloaded record is skipped and existing files are overwritten).
+  It applies to that one link and is kept through automatic retries.
+
 ## 0.4.0
 
 - New **Browse** tab: BBC iPlayer in a browser that runs inside the add-on and
